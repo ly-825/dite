@@ -1,0 +1,25 @@
+npm run dev
+uvicorn main:app --reload --port 8000
+ Set-Location "H:\pythonidea\xiangmu\work\Personal_AI_dietitian-main (1)\Personal_AI_dietitian-main"; if (Test-Path ".venv\Scripts\Activate.ps1") { . .\.venv\Scripts\Activate.ps1 }; python -m uvicorn backend.main:app --reload --port 8000
+
+
+git status
+git add .
+git commit -m "我修改了代码"
+git push origin master
+
+
+git init
+git remote add origin https://github.com/Chun-Qu-Qiu-Lai/diet-delushan
+git pull origin main --allow-unrelated-histories
+git add .
+git commit -m "我修改了代码"
+git push origin main
+
+
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/Chun-Qu-Qiu-Lai/diet-delushan.git
+git push -u origin main

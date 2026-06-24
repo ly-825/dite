@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# 环境变量
+backend/.env
+frontend/.env.local
+
+# IDE / OS
+.idea/
+.DS_Store
+
+# 运行时生成文件
+backend/app/bodyreport/
+backend/app/picfile/
+
+# 本地测试/样例大文件
+*.pdf
+*.docx
+*.png
+
+# 本地调试脚本与接口响应
+lj.py
+lj.json
+backend/*_response.json
+backend/stream_body.json
+frontend/*.bak.*
+
