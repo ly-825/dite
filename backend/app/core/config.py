@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     mysql_user: str = "root"
     mysql_password: str = ""
     mysql_db: str = "diet_delushan"
+    database_url_override: str = Field(
+        default="",
+        validation_alias=AliasChoices("DATABASE_URL", "DATABASE_URL_OVERRIDE", "database_url_override"),
+    )
 
     dashscope_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -44,6 +48,8 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """生成 MySQL 数据库连接地址。"""
+        if self.database_url_override.strip():
+            return self.database_url_override.strip()
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"

@@ -42,6 +42,12 @@ def serve_frontend_asset(full_path: str = ""):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """应用启动时加载核心体检报告。"""
+    if settings.database_url.startswith("sqlite"):
+        from app import models as _models  # noqa: F401
+        from app.db.base import Base
+        from app.db.session import engine
+
+        Base.metadata.create_all(bind=engine)
     chat_service.load_persisted_report()
     yield
 

@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.session import get_db
+from app.core.config import Settings
 from app.main import app
 from app.models import ChatMessage, ChatSession, MealRecord, User, UserProfile  # noqa: F401
 from app.services.chat_service import chat_service
@@ -54,6 +55,12 @@ def register_and_login(client: TestClient, username: str) -> str:
 
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_database_url_can_be_overridden_for_local_dev():
+    settings = Settings(database_url_override="sqlite:///./local-dev.db")
+
+    assert settings.database_url == "sqlite:///./local-dev.db"
 
 
 def test_register_can_omit_email_and_login_with_username(tmp_path):

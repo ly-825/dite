@@ -22,6 +22,7 @@ frontend/.env.local
 # 运行时生成文件
 backend/app/bodyreport/
 backend/app/picfile/
+backend/*.db
 
 # 本地测试/样例大文件
 *.pdf
