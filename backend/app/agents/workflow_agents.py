@@ -308,10 +308,12 @@ class RecipeGenerationAgent(BaseAgent):
     ) -> list[RecipeMealItem]:
         """当大模型不可用时，回退到规则型食谱。"""
         goal = state.goal or "均衡饮食"
-        low_salt = "高血压风险" in state.disease or any(
-            "血压" in item for item in state.health_risk.warnings if state.health_risk)
+        risk_warnings = state.health_risk.warnings if state.health_risk else []
+        low_salt = "高血压风险" in state.disease or any("血压" in item for item in risk_warnings)
         low_purine = "高尿酸风险" in state.disease
         low_sugar = "高血糖风险" in state.disease or goal == "控糖"
+        context = state.recommendation_context or {}
+        blocked_terms = set(state.allergy) | set(state.diet_preference) | set(context.get("disliked_dishes", []))
 
         if plan_scope == "week":
             return self._build_weekly_rule_recipe(
@@ -391,6 +393,9 @@ class RecipeGenerationAgent(BaseAgent):
 
         recipes = [breakfast, lunch, dinner, snack]
 
+        for item in recipes:
+            if any(term and term in item.dish_name for term in blocked_terms):
+                item.nutrition_analysis += " 已结合你的忌口和反馈做了避让。"
         if low_salt:
             for item in recipes:
                 item.nutrition_analysis += " 当前已按低钠方向控制调味。"

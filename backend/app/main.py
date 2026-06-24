@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
+from app.api.profile import router as profile_router
 from app.core.config import settings
 from app.services.chat_service import chat_service
 
@@ -58,6 +59,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(chat_router)
+app.include_router(profile_router)
 
 
 @app.get("/", include_in_schema=False)

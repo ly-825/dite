@@ -26,6 +26,19 @@
         </div>
 
         <div class="feature-list">
+          <RouterLink
+            v-for="feature in linkedFeatures"
+            :key="feature.title"
+            class="feature-card feature-card--link"
+            :to="feature.path"
+          >
+            <div>
+              <span class="feature-card__tag">{{ feature.agent }}</span>
+              <h3>{{ feature.title }}</h3>
+              <p>{{ feature.description }}</p>
+            </div>
+          </RouterLink>
+
           <article
             v-for="feature in features"
             :key="feature.title"
@@ -51,6 +64,15 @@ import SessionSidebar from '../components/chat/SessionSidebar.vue'
 import { useChatStore } from '../stores/chat'
 
 const chatStore = useChatStore()
+const linkedFeatures = [
+  {
+    title: '我的营养画像',
+    agent: 'C 端升级',
+    description: '维护目标、忌口、偏好和待确认记忆，让后续推荐更贴合。',
+    path: '/profile'
+  }
+]
+
 const features = [
   {
     title: '个性化菜谱生成',
@@ -180,6 +202,19 @@ async function handleSendMessage(content) {
     line-height: 1.45;
   }
 
+}
+
+.feature-card--link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.feature-card--link:hover {
+  border-color: rgba(21, 128, 61, 0.32);
+  box-shadow: 0 12px 28px rgba(21, 128, 61, 0.12);
+  transform: translateY(-1px);
 }
 
 .feature-card__tag {

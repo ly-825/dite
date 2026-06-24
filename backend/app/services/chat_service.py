@@ -38,6 +38,7 @@ from app.schemas.chat import (
     WorkflowState,
 )
 from app.services.llm_service import llm_service
+from app.services.profile_service import profile_service
 
 
 RECENT_HISTORY_LIMIT = 3
@@ -152,6 +153,8 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
         previous_meal_record_count = len(workflow_state.meal_records)
         assistant_content = self.master_agent.handle_message(
             workflow_state,
@@ -167,6 +170,13 @@ class InMemoryChatService:
             previous_count=previous_meal_record_count,
         )
         detail = self._append_assistant_message(session_id=session_id, content=assistant_content, session=session)
+        self._save_recipe_plan_if_available(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            workflow_state=workflow_state,
+            assistant_content=assistant_content,
+        )
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         self._persist_session_row(db=db, user_id=user_id, session=session)
         db.commit()
@@ -200,6 +210,8 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
         previous_meal_record_count = len(workflow_state.meal_records)
         accumulated_chunks: list[str] = []
         accumulated_thinking_chunks: list[str] = []
@@ -238,6 +250,13 @@ class InMemoryChatService:
                 content=final_content,
                 thinking_content=final_thinking_content,
                 session=session,
+            )
+            self._save_recipe_plan_if_available(
+                db=db,
+                user_id=user_id,
+                session_id=session_id,
+                workflow_state=workflow_state,
+                assistant_content=final_content,
             )
             self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
             self._persist_session_row(db=db, user_id=user_id, session=session)
@@ -869,9 +888,56 @@ class InMemoryChatService:
         profile = db.execute(
             select(UserProfile).where(UserProfile.user_id == user_id)
         ).scalar_one_or_none()
-        if profile is None or not profile.medical_report_text:
+        if profile is None:
             return
-        self._apply_medical_report_to_state(state, profile.medical_report_text)
+        if profile.medical_report_text:
+            self._apply_medical_report_to_state(state, profile.medical_report_text)
+        self._refresh_recommendation_context(db=db, user_id=user_id, state=state)
+
+    def _refresh_recommendation_context(self, *, db: Session, user_id: int, state: WorkflowState) -> None:
+        context = profile_service.build_recommendation_context(db=db, user_id=user_id)
+        state.goal = context.goal or state.goal
+        state.allergy = context.allergies
+        state.diet_preference = list(dict.fromkeys([*context.preferences, *context.taboos]))
+        state.disease = list(dict.fromkeys([*state.disease, *context.health_concerns]))
+        state.recommendation_context = context.model_dump()
+
+    def _remember_user_text(self, *, db: Session, user_id: int, session_id: str, text: str) -> None:
+        profile_service.save_pending_memories(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            text=text,
+        )
+
+    def _save_recipe_plan_if_available(
+        self,
+        *,
+        db: Session,
+        user_id: int,
+        session_id: str,
+        workflow_state: WorkflowState,
+        assistant_content: str,
+    ) -> None:
+        route_intent = workflow_state.last_route.intent if workflow_state.last_route else ""
+        if route_intent != "recipe_generation":
+            return
+        plan_type = "week" if "周" in assistant_content or any(item.day_label for item in workflow_state.recipe_plan) else "today"
+        if workflow_state.recipe_plan:
+            plan_content = {
+                "items": [item.model_dump(mode="json") for item in workflow_state.recipe_plan],
+                "markdown": assistant_content,
+            }
+        else:
+            plan_content = {"items": [], "markdown": assistant_content}
+        profile_service.save_recipe_plan(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            plan_type=plan_type,
+            plan_content=plan_content,
+            generation_basis=workflow_state.recommendation_context,
+        )
 
     def _save_user_medical_report(self, *, db: Session, user_id: int, parsed_report: str) -> None:
         profile = self._get_or_create_user_profile(db=db, user_id=user_id)

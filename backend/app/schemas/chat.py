@@ -141,6 +141,7 @@ class WorkflowState(BaseModel):
     last_route: AgentRouteDecision | None = None  # 主控 agent 最近一次路由决策。
     agent_trace: list[AgentTraceStep] = Field(default_factory=list)  # 本轮或当前会话内的 agent 执行轨迹。
     recent_history: list[ConversationMemoryItem] = Field(default_factory=list)  # 提供给 agent 的轻量最近对话上下文。
+    recommendation_context: dict = Field(default_factory=dict)  # 用户画像、历史记录和反馈形成的推荐上下文。
 
 
 class ChatMessage(BaseModel):
