@@ -10,6 +10,8 @@ from uuid import uuid4
 from pathlib import Path
 
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.agents.workflow_agents import (
     DietHistoryAnalysisAgent,
@@ -24,8 +26,17 @@ from app.agents.workflow_agents import (
     UserProfileAgent,
 )
 from app.db.session import SessionLocal
+from app.models.chat import ChatMessage as ChatMessageRow, ChatSession as ChatSessionRow
 from app.models.meal_record import MealRecord
-from app.schemas.chat import ChatMessage, ChatSessionDetail, ChatSessionSummary, ConversationMemoryItem, UserProfileData, WorkflowState
+from app.models.user_profile import UserProfile
+from app.schemas.chat import (
+    ChatMessage as ChatMessageSchema,
+    ChatSessionDetail,
+    ChatSessionSummary,
+    ConversationMemoryItem,
+    UserProfileData,
+    WorkflowState,
+)
 from app.services.llm_service import llm_service
 
 
@@ -70,9 +81,6 @@ class InMemoryChatService:
         self._lock = Lock()
         self._bodyreport_dir = Path(__file__).resolve().parents[1] / "bodyreport"
         self._bodyreport_dir.mkdir(parents=True, exist_ok=True)
-        self._core_report_path = self._bodyreport_dir / "core_medical_report.pdf"
-        self._core_report_cache_path = self._bodyreport_dir / "core_medical_report.json"
-        self._global_medical_report: str | None = None
         report_parser_agent = ReportParserAgent()
         self.report_parser_agent = report_parser_agent
         self.master_agent = MasterAgent(
@@ -87,27 +95,33 @@ class InMemoryChatService:
             diet_history_analysis_agent=DietHistoryAnalysisAgent(),
         )
 
-    def list_sessions(self) -> list[ChatSessionSummary]:
-        """获取所有会话摘要，按最近更新时间倒序排列。"""
+    def reset_runtime_state_for_tests(self, bodyreport_dir: Path | None = None) -> None:
+        """测试用：清空进程内缓存并切换运行时文件目录。"""
         with self._lock:
-            ordered_sessions = sorted(
-                self._sessions.values(),
-                key=lambda item: item["updated_at"],
-                reverse=True,
-            )
-            return [self._to_summary(item) for item in ordered_sessions]
+            self._sessions = {}
+            if bodyreport_dir is not None:
+                self._bodyreport_dir = bodyreport_dir
+                self._bodyreport_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_session(self, title: str | None = None) -> ChatSessionDetail:
+    def list_sessions(self, *, db: Session, user_id: int) -> list[ChatSessionSummary]:
+        """获取所有会话摘要，按最近更新时间倒序排列。"""
+        rows = db.execute(
+            select(ChatSessionRow)
+            .where(ChatSessionRow.user_id == user_id)
+            .order_by(ChatSessionRow.updated_at.desc())
+        ).scalars().all()
+        return [self._to_summary(self._session_from_row(db, row)) for row in rows]
+
+    def create_session(self, *, db: Session, user_id: int, title: str | None = None) -> ChatSessionDetail:
         """创建一个新的聊天会话，并附带一条欢迎消息。"""
         now = datetime.now()
         session_id = str(uuid4())
         session_title = title or "新的饮食计划"
         workflow_state = WorkflowState()
-        if self._global_medical_report is not None:
-            self._apply_global_report_to_state(workflow_state)
+        self._apply_user_profile_to_state(db=db, user_id=user_id, state=workflow_state)
         welcome_message = self._build_message(
             role="assistant",
-            content=self._build_welcome_message(),
+            content=self._build_welcome_message(workflow_state),
         )
         session: SessionDict = {
             "id": session_id,
@@ -120,34 +134,49 @@ class InMemoryChatService:
 
         with self._lock:
             self._sessions[session_id] = session
-            return self._to_detail(session)
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[welcome_message])
+        db.commit()
+        return self._to_detail(session)
 
-    def get_session(self, session_id: str) -> ChatSessionDetail:
+    def get_session(self, *, db: Session, user_id: int, session_id: str) -> ChatSessionDetail:
         """根据会话 ID 获取完整消息列表。"""
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None:
-                raise HTTPException(status_code=404, detail="会话不存在")
-            return self._to_detail(session)
+        return self._to_detail(self._get_session(db=db, user_id=user_id, session_id=session_id))
 
-    def append_message(self, session_id: str, content: str) -> ChatSessionDetail:
+    def append_message(self, *, db: Session, user_id: int, session_id: str, content: str) -> ChatSessionDetail:
         """向指定会话追加用户消息，并生成一条助手回复。"""
         cleaned_content = content.strip()
         if not cleaned_content:
             raise HTTPException(status_code=400, detail="消息内容不能为空")
 
+        self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         previous_meal_record_count = len(workflow_state.meal_records)
-        assistant_content = self.master_agent.handle_message(workflow_state, cleaned_content, session_id=session_id)
+        assistant_content = self.master_agent.handle_message(
+            workflow_state,
+            cleaned_content,
+            session_id=session_id,
+            user_id=user_id,
+        )
         self._persist_new_meal_records(
+            db=db,
+            user_id=user_id,
             session_id=session_id,
             workflow_state=workflow_state,
             previous_count=previous_meal_record_count,
         )
-        return self._append_assistant_message(session_id=session_id, content=assistant_content, session=session)
+        detail = self._append_assistant_message(session_id=session_id, content=assistant_content, session=session)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.commit()
+        return detail
 
     def stream_message(
         self,
+        *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None = None,
         files: list[FilePayloadDict] | None = None,
@@ -156,6 +185,8 @@ class InMemoryChatService:
         normalized_files = files or []
         if normalized_files:
             yield from self._stream_message_with_files(
+                db=db,
+                user_id=user_id,
                 session_id=session_id,
                 content=content,
                 files=normalized_files,
@@ -166,7 +197,9 @@ class InMemoryChatService:
         if not cleaned_content:
             raise HTTPException(status_code=400, detail="消息内容不能为空")
 
+        self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         previous_meal_record_count = len(workflow_state.meal_records)
         accumulated_chunks: list[str] = []
         accumulated_thinking_chunks: list[str] = []
@@ -174,7 +207,12 @@ class InMemoryChatService:
         yield self._build_stream_event("start", {"session_id": session_id})
 
         try:
-            for chunk in self.master_agent.stream_message(workflow_state, cleaned_content, session_id=session_id):
+            for chunk in self.master_agent.stream_message(
+                workflow_state,
+                cleaned_content,
+                session_id=session_id,
+                user_id=user_id,
+            ):
                 chunk_type, chunk_content = self._normalize_stream_chunk(chunk)
                 if not chunk_content:
                     continue
@@ -189,6 +227,8 @@ class InMemoryChatService:
             final_content = "".join(accumulated_chunks).strip()
             final_thinking_content = "".join(accumulated_thinking_chunks).strip()
             self._persist_new_meal_records(
+                db=db,
+                user_id=user_id,
                 session_id=session_id,
                 workflow_state=workflow_state,
                 previous_count=previous_meal_record_count,
@@ -199,6 +239,9 @@ class InMemoryChatService:
                 thinking_content=final_thinking_content,
                 session=session,
             )
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+            self._persist_session_row(db=db, user_id=user_id, session=session)
+            db.commit()
             yield self._build_stream_event(
                 "done",
                 {"session_detail": session_detail.model_dump(mode="json")},
@@ -209,6 +252,8 @@ class InMemoryChatService:
     def _stream_message_with_files(
         self,
         *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         files: list[FilePayloadDict],
@@ -230,6 +275,8 @@ class InMemoryChatService:
 
                 if suffix == ".pdf" or "pdf" in normalized_type:
                     yield from self._stream_pdf_message(
+                        db=db,
+                        user_id=user_id,
                         session_id=session_id,
                         content=content,
                         file_bytes=item["file_bytes"],
@@ -240,6 +287,8 @@ class InMemoryChatService:
                 image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
                 if suffix in image_suffixes or normalized_type.startswith("image/"):
                     yield from self._stream_single_image_message(
+                        db=db,
+                        user_id=user_id,
                         session_id=session_id,
                         content=content,
                         file_bytes=item["file_bytes"],
@@ -250,6 +299,8 @@ class InMemoryChatService:
                 raise HTTPException(status_code=400, detail="仅支持上传 PDF 或图片文件")
 
             yield from self._stream_meal_image_pair_message(
+                db=db,
+                user_id=user_id,
                 session_id=session_id,
                 content=content,
                 files=files,
@@ -260,54 +311,43 @@ class InMemoryChatService:
     def _stream_pdf_message(
         self,
         *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         file_bytes: bytes,
         file_name: str,
     ):
         route_message = (content or "").strip() or "请帮我解析并保存这份体检报告。"
+        self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=route_message)
-        accumulated_chunks: list[str] = []
-        accumulated_thinking_chunks: list[str] = []
-
-        for chunk in self.master_agent.stream_message(
-            workflow_state,
-            route_message,
-            session_id=session_id,
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        parsed_report = self.report_parser_agent.parse_upload(
             file_bytes=file_bytes,
             file_name=file_name,
-            uploaded_image_count=0,
-        ):
-            chunk_type, chunk_content = self._normalize_stream_chunk(chunk)
-            if not chunk_content:
-                continue
-            if chunk_type == "thinking":
-                accumulated_thinking_chunks.append(chunk_content)
-                yield self._build_stream_event("thinking_delta", {"content": chunk_content})
-                continue
-            accumulated_chunks.append(chunk_content)
-            yield self._build_stream_event("delta", {"content": chunk_content})
-
-        last_route = workflow_state.last_route
-        if last_route and last_route.intent == "report_parsing" and workflow_state.medical_report is not None:
-            if Path(file_name).suffix.lower() == ".pdf":
-                self._persist_core_report(file_bytes)
-            with self._lock:
-                self._global_medical_report = workflow_state.medical_report
-                self._persist_core_report_cache(workflow_state.medical_report)
-                self._sync_all_sessions_with_global_report()
+        )
+        self._apply_medical_report_to_state(workflow_state, parsed_report)
+        if Path(file_name).suffix.lower() == ".pdf":
+            self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
+        self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
+        assistant_content = self._build_report_saved_message(parsed_report)
+        yield self._build_stream_event("delta", {"content": assistant_content})
 
         session_detail = self._append_assistant_message(
             session_id=session_id,
-            content="".join(accumulated_chunks).strip(),
-            thinking_content="".join(accumulated_thinking_chunks).strip(),
+            content=assistant_content,
             session=session,
         )
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.commit()
         yield self._build_stream_event("done", {"session_detail": session_detail.model_dump(mode="json")})
 
     def _stream_single_image_message(
         self,
         *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         file_bytes: bytes,
@@ -318,13 +358,12 @@ class InMemoryChatService:
         merged_message = f"{cleaned_content}\n{image_note}".strip()
 
         with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None:
-                raise HTTPException(status_code=404, detail="会话不存在")
+            session = self._get_session(db=db, user_id=user_id, session_id=session_id)
             workflow_state = session["workflow_state"]
             user_message = self._build_message(role="user", content=merged_message)
             session["messages"].append(user_message)
             self._push_recent_history(workflow_state, user_message)
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[user_message])
 
         event_queue: Queue[dict[str, str]] = Queue()
         result_holder: dict[str, Any] = {}
@@ -387,7 +426,7 @@ class InMemoryChatService:
         elif cleaned_content:
             assistant_content = (
                 f"我已经收到图片《{file_name}》。\n\n"
-                f"{self.master_agent.handle_message(workflow_state, cleaned_content, session_id=session_id, uploaded_image_count=1)}"
+                f"{self.master_agent.handle_message(workflow_state, cleaned_content, session_id=session_id, uploaded_image_count=1, user_id=user_id)}"
             )
         else:
             assistant_content = (
@@ -403,11 +442,16 @@ class InMemoryChatService:
             thinking_content="".join(accumulated_thinking_chunks).strip(),
             session=session,
         )
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.commit()
         yield self._build_stream_event("done", {"session_detail": session_detail.model_dump(mode="json")})
 
     def _stream_meal_image_pair_message(
         self,
         *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         files: list[FilePayloadDict],
@@ -431,6 +475,7 @@ class InMemoryChatService:
             f"{route_message}\n餐前图片：{normalized_files[0]['file_name']}\n餐后图片：{normalized_files[1]['file_name']}"
         )
         session, workflow_state = self._append_user_message(session_id=session_id, content=merged_message)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         previous_meal_record_count = len(workflow_state.meal_records)
         accumulated_chunks: list[str] = []
         accumulated_thinking_chunks: list[str] = []
@@ -439,6 +484,7 @@ class InMemoryChatService:
             workflow_state,
             route_message,
             session_id=session_id,
+            user_id=user_id,
             meal_before_image_bytes=cast(bytes, normalized_files[0]["file_bytes"]),
             meal_before_image_name=cast(str, normalized_files[0]["file_name"]),
             meal_after_image_bytes=cast(bytes, normalized_files[1]["file_bytes"]),
@@ -456,6 +502,8 @@ class InMemoryChatService:
             yield self._build_stream_event("delta", {"content": chunk_content})
 
         self._persist_new_meal_records(
+            db=db,
+            user_id=user_id,
             session_id=session_id,
             workflow_state=workflow_state,
             previous_count=previous_meal_record_count,
@@ -466,6 +514,9 @@ class InMemoryChatService:
             thinking_content="".join(accumulated_thinking_chunks).strip(),
             session=session,
         )
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.commit()
         yield self._build_stream_event("done", {"session_detail": session_detail.model_dump(mode="json")})
 
     def _normalize_stream_chunk(self, chunk: Any) -> tuple[Literal["answer", "thinking"], str]:
@@ -476,6 +527,9 @@ class InMemoryChatService:
 
     def append_message_with_file(
         self,
+        *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         file_bytes: bytes,
@@ -489,30 +543,28 @@ class InMemoryChatService:
         if suffix == ".pdf" or "pdf" in normalized_type:
             cleaned_content = (content or "").strip()
             route_message = cleaned_content or "请帮我解析并保存这份体检报告。"
+            self._get_session(db=db, user_id=user_id, session_id=session_id)
             session, workflow_state = self._append_user_message(session_id=session_id, content=route_message)
-            assistant_content = self.master_agent.handle_message(
-                workflow_state,
-                route_message,
-                session_id=session_id,
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+            parsed_report = self.report_parser_agent.parse_upload(
                 file_bytes=file_bytes,
                 file_name=normalized_name,
-                uploaded_image_count=0,
             )
+            self._apply_medical_report_to_state(workflow_state, parsed_report)
+            if suffix == ".pdf":
+                self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
+            self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
+            assistant_content = self._build_report_saved_message(parsed_report)
 
-            last_route = workflow_state.last_route
-            if last_route and last_route.intent == "report_parsing" and workflow_state.medical_report is not None:
-                if suffix == ".pdf":
-                    self._persist_core_report(file_bytes)
-                with self._lock:
-                    self._global_medical_report = workflow_state.medical_report
-                    self._persist_core_report_cache(workflow_state.medical_report)
-                    self._sync_all_sessions_with_global_report()
-
-            return self._append_assistant_message(
+            detail = self._append_assistant_message(
                 session_id=session_id,
                 content=assistant_content,
                 session=session,
             )
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+            self._persist_session_row(db=db, user_id=user_id, session=session)
+            db.commit()
+            return detail
 
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         if suffix in image_suffixes or normalized_type.startswith("image/"):
@@ -521,14 +573,13 @@ class InMemoryChatService:
             merged_message = f"{cleaned_content}\n{image_note}".strip()
 
             with self._lock:
-                session = self._sessions.get(session_id)
-                if session is None:
-                    raise HTTPException(status_code=404, detail="会话不存在")
+                session = self._get_session(db=db, user_id=user_id, session_id=session_id)
 
                 workflow_state = session["workflow_state"]
                 user_message = self._build_message(role="user", content=merged_message)
                 session["messages"].append(user_message)
                 self._push_recent_history(workflow_state, user_message)
+                self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[user_message])
 
                 analyzed_content = llm_service.analyze_single_meal_image(
                     image_bytes=file_bytes,
@@ -540,7 +591,7 @@ class InMemoryChatService:
                 elif cleaned_content:
                     assistant_content = (
                         f"我已经收到图片《{normalized_name}》。\n\n"
-                        f"{self.master_agent.handle_message(workflow_state, cleaned_content, session_id=session_id, uploaded_image_count=1)}"
+                        f"{self.master_agent.handle_message(workflow_state, cleaned_content, session_id=session_id, uploaded_image_count=1, user_id=user_id)}"
                     )
                 else:
                     assistant_content = (
@@ -556,12 +607,18 @@ class InMemoryChatService:
                 session["messages"].append(assistant_reply)
                 self._push_recent_history(workflow_state, assistant_reply)
                 session["updated_at"] = assistant_reply["created_at"]
+                self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[assistant_reply])
+                self._persist_session_row(db=db, user_id=user_id, session=session)
+                db.commit()
                 return self._to_detail(session)
 
         raise HTTPException(status_code=400, detail="仅支持上传 PDF 或图片文件")
 
     def append_message_with_files(
         self,
+        *,
+        db: Session,
+        user_id: int,
         session_id: str,
         content: str | None,
         files: list[FilePayloadDict],
@@ -573,6 +630,8 @@ class InMemoryChatService:
         if len(files) == 1:
             item = files[0]
             return self.append_message_with_file(
+                db=db,
+                user_id=user_id,
                 session_id=session_id,
                 content=content,
                 file_bytes=item["file_bytes"],
@@ -601,32 +660,43 @@ class InMemoryChatService:
         merged_message = (
             f"{route_message}\n餐前图片：{normalized_files[0]['file_name']}\n餐后图片：{normalized_files[1]['file_name']}"
         )
+        self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=merged_message)
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         previous_meal_record_count = len(workflow_state.meal_records)
         assistant_content = self.master_agent.handle_message(
             workflow_state,
             route_message,
             session_id=session_id,
+            user_id=user_id,
             meal_before_image_bytes=cast(bytes, normalized_files[0]["file_bytes"]),
             meal_before_image_name=cast(str, normalized_files[0]["file_name"]),
             meal_after_image_bytes=cast(bytes, normalized_files[1]["file_bytes"]),
             meal_after_image_name=cast(str, normalized_files[1]["file_name"]),
             uploaded_image_count=2,
         )
-        print("马上进入保存")
         self._persist_new_meal_records(
+            db=db,
+            user_id=user_id,
             session_id=session_id,
             workflow_state=workflow_state,
             previous_count=previous_meal_record_count,
         )
-        return self._append_assistant_message(
+        detail = self._append_assistant_message(
             session_id=session_id,
             content=assistant_content,
             session=session,
         )
+        self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+        self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.commit()
+        return detail
 
     def upload_medical_report(
         self,
+        *,
+        db: Session,
+        user_id: int,
         session_id: str,
         report_text: str | None = None,
         file_bytes: bytes | None = None,
@@ -634,15 +704,10 @@ class InMemoryChatService:
     ) -> ChatSessionDetail:
         """为指定会话上传并解析体检报告。"""
         with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None:
-                raise HTTPException(status_code=404, detail="会话不存在")
+            session = self._get_session(db=db, user_id=user_id, session_id=session_id)
 
-            route_message = "我上传了体检报告，请先保存并解析。"
             try:
-                prepared = self.master_agent.prepare_reply(
-                    session["workflow_state"],
-                    route_message,
+                parsed_report = self.report_parser_agent.parse_upload(
                     report_text=report_text,
                     file_bytes=file_bytes,
                     file_name=file_name,
@@ -650,19 +715,17 @@ class InMemoryChatService:
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            parsed_report = cast(str | None, prepared.get("parsed_report") or session["workflow_state"].medical_report)
-            if parsed_report is None:
+            if not parsed_report:
                 raise HTTPException(status_code=400, detail="体检报告解析失败，请重新上传。")
+            self._apply_medical_report_to_state(session["workflow_state"], parsed_report)
 
             if file_bytes and file_name and Path(file_name).suffix.lower() == ".pdf":
-                self._persist_core_report(file_bytes)
+                self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
 
-            self._global_medical_report = parsed_report
-            self._persist_core_report_cache(parsed_report)
-            self._sync_all_sessions_with_global_report()
+            self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
 
             state = session["workflow_state"]
-            report_summary = prepared.get("fallback_reply") or self._build_report_saved_message(parsed_report)
+            report_summary = self._build_report_saved_message(parsed_report)
             assistant_reply = self._build_message(
                 role="assistant",
                 content=report_summary,
@@ -675,31 +738,170 @@ class InMemoryChatService:
             if session["title"] == "新的饮食计划":
                 session["title"] = "体检报告已上传"
 
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[assistant_reply])
+            self._persist_session_row(db=db, user_id=user_id, session=session)
+            db.commit()
             return self._to_detail(session)
 
     def load_persisted_report(self) -> bool:
-        """服务启动时加载已持久化的核心体检报告。"""
-        cached_report = self._load_cached_report()
-        if cached_report is not None:
-            self._global_medical_report = cached_report
-            self._sync_all_sessions_with_global_report()
-            return True
+        """第一阶段改为用户级体检报告，启动时不再加载全局报告。"""
+        return False
 
-        report_path = self._resolve_existing_report_path()
-        if report_path is None:
-            self._global_medical_report = None
-            return False
+    def _get_session(self, *, db: Session, user_id: int, session_id: str) -> SessionDict:
+        row = db.execute(
+            select(ChatSessionRow).where(
+                ChatSessionRow.id == session_id,
+                ChatSessionRow.user_id == user_id,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        cached = self._sessions.get(session_id)
+        if cached is not None:
+            return cached
+        return self._session_from_row(db, row)
 
+    def _session_from_row(self, db: Session, row: ChatSessionRow) -> SessionDict:
+        messages = [
+            self._message_from_row(item)
+            for item in db.execute(
+                select(ChatMessageRow)
+                .where(
+                    ChatMessageRow.session_id == row.id,
+                    ChatMessageRow.user_id == row.user_id,
+                )
+                .order_by(ChatMessageRow.created_at.asc())
+            ).scalars()
+        ]
+        session: SessionDict = {
+            "id": row.id,
+            "title": row.title,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+            "messages": messages,
+            "workflow_state": self._state_from_json(row.workflow_state_json),
+        }
+        self._sessions[row.id] = session
+        return session
+
+    def _message_from_row(self, row: ChatMessageRow) -> MessageDict:
         try:
-            parsed_report = self._parse_persisted_report_locally(report_path)
-        except ValueError:
-            self._global_medical_report = None
-            return False
+            suggested_questions = json.loads(row.suggested_questions_json or "[]")
+        except Exception:
+            suggested_questions = []
+        return {
+            "id": row.id,
+            "role": cast(Literal["user", "assistant"], row.role),
+            "content": row.content,
+            "thinking_content": row.thinking_content or "",
+            "created_at": row.created_at,
+            "suggested_questions": suggested_questions if isinstance(suggested_questions, list) else [],
+        }
 
-        self._global_medical_report = parsed_report
-        self._persist_core_report_cache(parsed_report)
-        self._sync_all_sessions_with_global_report()
-        return True
+    def _persist_session_row(self, *, db: Session, user_id: int, session: SessionDict) -> None:
+        row = db.get(ChatSessionRow, session["id"])
+        payload = {
+            "user_id": user_id,
+            "title": session["title"],
+            "workflow_state_json": self._state_to_json(session["workflow_state"]),
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+        }
+        if row is None:
+            db.add(ChatSessionRow(id=session["id"], **payload))
+            return
+        if row.user_id != user_id:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        row.title = payload["title"]
+        row.workflow_state_json = payload["workflow_state_json"]
+        row.updated_at = payload["updated_at"]
+
+    def _persist_message_rows(
+        self,
+        *,
+        db: Session,
+        user_id: int,
+        session_id: str,
+        messages: list[MessageDict],
+    ) -> None:
+        for message in messages:
+            if db.get(ChatMessageRow, message["id"]) is not None:
+                continue
+            db.add(
+                ChatMessageRow(
+                    id=message["id"],
+                    session_id=session_id,
+                    user_id=user_id,
+                    role=message["role"],
+                    content=message["content"],
+                    thinking_content=message.get("thinking_content", ""),
+                    suggested_questions_json=json.dumps(
+                        message.get("suggested_questions", []),
+                        ensure_ascii=False,
+                    ),
+                    created_at=message["created_at"],
+                )
+            )
+
+    def _state_to_json(self, state: WorkflowState) -> str:
+        return json.dumps(state.model_dump(mode="json"), ensure_ascii=False)
+
+    def _state_from_json(self, payload: str | None) -> WorkflowState:
+        if not payload:
+            return WorkflowState()
+        try:
+            return WorkflowState.model_validate(json.loads(payload))
+        except Exception:
+            return WorkflowState()
+
+    def _get_or_create_user_profile(self, *, db: Session, user_id: int) -> UserProfile:
+        profile = db.execute(
+            select(UserProfile).where(UserProfile.user_id == user_id)
+        ).scalar_one_or_none()
+        if profile is not None:
+            return profile
+        profile = UserProfile(user_id=user_id)
+        db.add(profile)
+        db.flush()
+        return profile
+
+    def _apply_user_profile_to_state(self, *, db: Session, user_id: int, state: WorkflowState) -> None:
+        profile = db.execute(
+            select(UserProfile).where(UserProfile.user_id == user_id)
+        ).scalar_one_or_none()
+        if profile is None or not profile.medical_report_text:
+            return
+        self._apply_medical_report_to_state(state, profile.medical_report_text)
+
+    def _save_user_medical_report(self, *, db: Session, user_id: int, parsed_report: str) -> None:
+        profile = self._get_or_create_user_profile(db=db, user_id=user_id)
+        profile.medical_report_text = parsed_report
+        profile.updated_at = datetime.now()
+
+    def _apply_medical_report_to_state(self, state: WorkflowState, medical_report: str) -> None:
+        state.has_medical_report = True
+        state.profile_completed = False
+        state.health_risk_level = "unknown"
+        state.medical_report = deepcopy(medical_report)
+        state.user_profile = UserProfileData(medical_report_markdown=state.medical_report or "")
+        state.disease = []
+        state.health_risk = None
+        state.nutrition_analysis = None
+        state.recipe_plan = []
+        state.recommendations = []
+        state.goal = ""
+        state.diet_preference = []
+        state.allergy = []
+        state.latest_profile_reply = ""
+        state.latest_health_risk_reply = ""
+        state.latest_recipe_reply = ""
+        state.last_route = None
+        state.agent_trace = []
+
+    def _user_report_path(self, user_id: int) -> Path:
+        user_dir = self._bodyreport_dir / f"user_{user_id}"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir / "core_medical_report.pdf"
 
     def _append_user_message(self, session_id: str, content: str) -> tuple[SessionDict, WorkflowState]:
         """先写入用户消息并返回会话上下文。"""
@@ -749,36 +951,36 @@ class InMemoryChatService:
     def _persist_new_meal_records(
         self,
         *,
+        db: Session,
+        user_id: int,
         session_id: str,
         workflow_state: WorkflowState,
         previous_count: int,
     ) -> None:
-        print("保存2")
         new_records = workflow_state.meal_records[previous_count:]
         if not new_records:
             return
-        print("保存1")
 
-        db = SessionLocal()
-        try:
-            for item in new_records:
-                if not item.analysis_markdown:
-                    continue
-                db.add(
-                    MealRecord(
-                        session_id=session_id,
-                        recorded_at=item.recorded_at,
-                        meal_type=item.meal_type,
-                        analysis_markdown=item.analysis_markdown,
-                    )
+        for item in new_records:
+            if not item.analysis_markdown:
+                continue
+            db.add(
+                MealRecord(
+                    user_id=user_id,
+                    session_id=session_id,
+                    recorded_at=item.recorded_at,
+                    meal_type=item.meal_type,
+                    foods_json=json.dumps(
+                        [food.model_dump(mode="json") for food in item.consumed_items],
+                        ensure_ascii=False,
+                    ),
+                    estimated_calories_kcal=item.estimated_calories_kcal,
+                    estimated_protein_g=item.estimated_protein_g,
+                    estimated_carbohydrate_g=item.estimated_carbohydrate_g,
+                    estimated_fat_g=item.estimated_fat_g,
+                    analysis_markdown=item.analysis_markdown,
                 )
-            db.commit()
-            print("保存3")
-        except Exception as  e:
-            print("报错",e)
-            db.rollback()
-        finally:
-            db.close()
+            )
 
     def _build_suggested_questions(self, state: WorkflowState, assistant_reply: str) -> list[str]:
         recent_user_messages = [
@@ -890,38 +1092,15 @@ class InMemoryChatService:
         payload = json.dumps({"type": event_type, "data": data}, ensure_ascii=False)
         return f"data: {payload}\n\n"
 
-    def _persist_core_report(self, file_bytes: bytes) -> None:
-        """将新的核心体检报告 PDF 写入 bodyreport 目录，并覆盖旧文件。"""
-        self._core_report_path.write_bytes(file_bytes)
+    def _persist_core_report(self, *, user_id: int, file_bytes: bytes) -> None:
+        """将新的用户级体检报告 PDF 写入 bodyreport/user_<id> 目录。"""
+        self._user_report_path(user_id).write_bytes(file_bytes)
 
     def _persist_core_report_cache(self, parsed_report: str) -> None:
         """缓存 Markdown 体检报告，避免服务启动时再次请求大模型解析 PDF。"""
-        self._core_report_cache_path.write_text(
-            json.dumps({"medical_report_markdown": parsed_report}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        return
 
     def _load_cached_report(self) -> str | None:
-        if not self._core_report_cache_path.exists():
-            return None
-        try:
-            payload = json.loads(self._core_report_cache_path.read_text(encoding="utf-8"))
-            if isinstance(payload, str):
-                return payload
-            if isinstance(payload, dict):
-                markdown = payload.get("medical_report_markdown") or payload.get("markdown")
-                if isinstance(markdown, str) and markdown.strip():
-                    return markdown.strip()
-                raw_text = payload.get("raw_text")
-                if isinstance(raw_text, str) and raw_text.strip():
-                    return self.report_parser_agent._ensure_markdown_report(raw_text)
-                legacy_report = payload.get("medical_report")
-                if isinstance(legacy_report, dict):
-                    legacy_raw_text = legacy_report.get("raw_text")
-                    if isinstance(legacy_raw_text, str) and legacy_raw_text.strip():
-                        return self.report_parser_agent._ensure_markdown_report(legacy_raw_text)
-        except Exception:
-            return None
         return None
 
     def _parse_persisted_report_locally(self, report_path: Path) -> str:
@@ -941,52 +1120,15 @@ class InMemoryChatService:
 
     def _resolve_existing_report_path(self) -> Path | None:
         """获取当前系统使用的核心体检报告路径。"""
-        if self._core_report_path.exists():
-            return self._core_report_path
-
-        candidates = sorted(self._bodyreport_dir.glob("*.pdf"), key=lambda item: item.stat().st_mtime, reverse=True)
-        if not candidates:
-            return None
-
-        latest_report = candidates[0]
-        if latest_report != self._core_report_path:
-            self._core_report_path.write_bytes(latest_report.read_bytes())
-            for redundant_file in candidates:
-                if redundant_file != self._core_report_path and redundant_file.exists():
-                    redundant_file.unlink(missing_ok=True)
-        return self._core_report_path
+        return None
 
     def _sync_all_sessions_with_global_report(self) -> None:
         """将系统级核心体检报告同步到当前所有会话。"""
-        if self._global_medical_report is None:
-            return
-
-        for session in self._sessions.values():
-            self._apply_global_report_to_state(session["workflow_state"])
+        return
 
     def _apply_global_report_to_state(self, state: WorkflowState) -> None:
         """把系统级体检报告写入会话状态，但延迟计算昂贵的衍生结果。"""
-        if self._global_medical_report is None:
-            return
-
-        state.has_medical_report = True
-        state.profile_completed = False
-        state.health_risk_level = "unknown"
-        state.medical_report = deepcopy(self._global_medical_report)
-        state.user_profile = UserProfileData(medical_report_markdown=state.medical_report or "")
-        state.disease = []
-        state.health_risk = None
-        state.nutrition_analysis = None
-        state.recipe_plan = []
-        state.recommendations = []
-        state.goal = ""
-        state.diet_preference = []
-        state.allergy = []
-        state.latest_profile_reply = ""
-        state.latest_health_risk_reply = ""
-        state.latest_recipe_reply = ""
-        state.last_route = None
-        state.agent_trace = []
+        return
 
     def _build_message(
         self,
@@ -1012,8 +1154,8 @@ class InMemoryChatService:
             return normalized
         return f"{normalized[:14]}..."
 
-    def _build_welcome_message(self) -> str:
-        if self._global_medical_report is not None:
+    def _build_welcome_message(self, state: WorkflowState | None = None) -> str:
+        if state is not None and state.has_medical_report:
             return (
                 "你好，我是食堂健康点餐助手。你可以继续提问，我会结合当前已保存的体检信息，"
                 "为你提供食谱规划、营养分析、餐前餐后对比和饮食建议。"
@@ -1024,7 +1166,7 @@ class InMemoryChatService:
             "饮食偏好、过敏和忌口，我会帮你做食谱规划、营养分析和点餐建议。"
         )
 
-        if self._global_medical_report is not None:
+        if state is not None and state.has_medical_report:
             return (
                 "你好，我是食堂健康点餐助手。系统已自动加载 `app/bodyreport` 目录下的核心体检报告。"
                 "你现在可以直接提问，我会结合食堂常见菜品、主食、汤品和分量，给出更通俗、好执行的点餐建议。"
@@ -1036,7 +1178,7 @@ class InMemoryChatService:
             "上传后，我会结合你的健康情况、风险提示和日常吃饭场景，给出更适合普通大众照着做的建议。"
         )
         """根据当前系统是否已有核心体检报告，返回不同的欢迎提示。"""
-        if self._global_medical_report is not None:
+        if state is not None and state.has_medical_report:
             return (
                 "你好，我是基于 Multi-Agent 架构的 AI 健康智能营养系统。"
                 "系统已自动加载 `app/bodyreport` 目录下的核心体检报告，"
@@ -1071,7 +1213,7 @@ class InMemoryChatService:
     def _to_detail(self, session: SessionDict) -> ChatSessionDetail:
         """将内部会话结构转换为详情模型。"""
         summary = self._to_summary(session)
-        messages = [ChatMessage.model_validate(deepcopy(item)) for item in session["messages"]]
+        messages = [ChatMessageSchema.model_validate(deepcopy(item)) for item in session["messages"]]
         return ChatSessionDetail(
             **summary.model_dump(),
             messages=messages,

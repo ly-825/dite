@@ -1010,8 +1010,8 @@ class DietHistoryAnalysisAgent(BaseAgent):
 
     agent_name = "历史饮食分析智能体"
 
-    def answer(self, *, session_id: str, user_message: str) -> str:
-        records = self._load_recent_records(session_id=session_id)
+    def answer(self, *, session_id: str, user_message: str, user_id: int | None = None) -> str:
+        records = self._load_recent_records(session_id=session_id, user_id=user_id)
         if not records:
             return "我还没有查到你的历史用餐记录。你可以先上传几次餐前餐后图片生成记录，再来问我历史饮食分析问题。"
 
@@ -1032,16 +1032,19 @@ class DietHistoryAnalysisAgent(BaseAgent):
             return llm_reply
         return self._build_fallback_reply(history_payload)
 
-    def _load_recent_records(self, *, session_id: str, limit: int = 20) -> list[MealRecord]:
+    def _load_recent_records(
+            self,
+            *,
+            session_id: str,
+            user_id: int | None = None,
+            limit: int = 20,
+    ) -> list[MealRecord]:
         db = SessionLocal()
         try:
-            return (
-                db.query(MealRecord)
-                .filter(MealRecord.session_id == session_id)
-                .order_by(MealRecord.recorded_at.desc(), MealRecord.id.desc())
-                .limit(limit)
-                .all()
-            )
+            query = db.query(MealRecord).filter(MealRecord.session_id == session_id)
+            if user_id is not None:
+                query = query.filter(MealRecord.user_id == user_id)
+            return query.order_by(MealRecord.recorded_at.desc(), MealRecord.id.desc()).limit(limit).all()
         finally:
             db.close()
 
@@ -1106,6 +1109,7 @@ class MasterAgent(BaseAgent):
             meal_after_image_name: str | None = None,
             uploaded_image_count: int = 0,
             session_id: str = "",
+            user_id: int | None = None,
     ) -> str:
         """根据用户意图驱动完整多智能体工作流。"""
         prepared = self.prepare_reply(
@@ -1120,6 +1124,7 @@ class MasterAgent(BaseAgent):
             meal_after_image_name=meal_after_image_name,
             uploaded_image_count=uploaded_image_count,
             session_id=session_id,
+            user_id=user_id,
         )
         if prepared["blocked"]:
             return prepared["guard_message"]
@@ -1160,6 +1165,7 @@ class MasterAgent(BaseAgent):
             meal_after_image_name: str | None = None,
             uploaded_image_count: int = 0,
             session_id: str = "",
+            user_id: int | None = None,
     ):
         """根据用户意图流式输出最终回复。"""
         event_queue: Queue[dict[str, Any]] = Queue()
@@ -1190,6 +1196,7 @@ class MasterAgent(BaseAgent):
                         meal_after_image_name=meal_after_image_name,
                         uploaded_image_count=uploaded_image_count,
                         session_id=session_id,
+                        user_id=user_id,
                     )
             except Exception as exc:
                 result_holder["error"] = exc
@@ -1272,6 +1279,7 @@ class MasterAgent(BaseAgent):
             meal_after_image_name: str | None = None,
             uploaded_image_count: int = 0,
             session_id: str = "",
+            user_id: int | None = None,
     ) -> dict[str, Any]:
         """通过 LangGraph 运行多智能体工作流并返回结构化结果。"""
         result = self.workflow_graph.invoke(
@@ -1286,6 +1294,7 @@ class MasterAgent(BaseAgent):
                 "meal_after_image_name": meal_after_image_name,
                 "uploaded_image_count": uploaded_image_count,
                 "session_id": session_id,
+                "user_id": user_id,
                 "workflow_state": state,
             }
         )

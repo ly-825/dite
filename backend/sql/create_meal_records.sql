@@ -1,11 +1,20 @@
 CREATE TABLE IF NOT EXISTS `meal_records` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `user_id` INT NULL,
   `session_id` VARCHAR(64) NOT NULL,
   `recorded_at` DATETIME NOT NULL,
   `meal_type` VARCHAR(32) NOT NULL,
+  `foods_json` LONGTEXT NULL,
+  `estimated_calories_kcal` INT NULL,
+  `estimated_protein_g` FLOAT NULL,
+  `estimated_carbohydrate_g` FLOAT NULL,
+  `estimated_fat_g` FLOAT NULL,
+  `user_feedback` VARCHAR(64) NULL,
   `analysis_markdown` LONGTEXT NOT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  KEY `idx_meal_records_user_id` (`user_id`),
   KEY `idx_meal_records_session_id` (`session_id`),
-  KEY `idx_meal_records_recorded_at` (`recorded_at`)
+  KEY `idx_meal_records_recorded_at` (`recorded_at`),
+  CONSTRAINT `fk_meal_records_user_id` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

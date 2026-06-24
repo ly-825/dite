@@ -16,6 +16,7 @@ class GraphState(TypedDict, total=False):
 
     user_message: str
     session_id: str
+    user_id: int | None
     intent: str
     target_agent: str
     route_reason: str

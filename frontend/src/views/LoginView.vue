@@ -56,10 +56,11 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { useAuthStore } from '../stores/auth'
 
+const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
@@ -83,7 +84,7 @@ async function handleLogin() {
 
   try {
     await authStore.login(form)
-    await router.push('/')
+    await router.push(route.query.redirect || '/')
   } catch (error) {
     errorMessage.value = error.response?.data?.detail || '登录失败，请稍后重试'
   } finally {

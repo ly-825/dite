@@ -144,6 +144,7 @@ def build_nutrition_graph(master_agent: Any):
         diet_history_reply = master_agent.diet_history_analysis_agent.answer(
             session_id=state.get("session_id", ""),
             user_message=state["user_message"],
+            user_id=state.get("user_id"),
         )
         return {
             "workflow_state": workflow_state,
