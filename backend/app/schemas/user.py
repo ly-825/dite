@@ -7,7 +7,7 @@ class UserCreate(BaseModel):
     """注册请求参数。"""
 
     username: str = Field(min_length=3, max_length=20)
-    email: EmailStr
+    email: EmailStr | None = None
     password: str = Field(min_length=6, max_length=20)
 
 

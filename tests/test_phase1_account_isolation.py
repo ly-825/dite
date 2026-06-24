@@ -56,6 +56,56 @@ def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_register_can_omit_email_and_login_with_username(tmp_path):
+    client = make_client(tmp_path)
+
+    register_response = client.post(
+        "/api/auth/register",
+        json={"username": "noemail_user", "password": "StrongPass123"},
+    )
+
+    assert register_response.status_code == 201
+    registered = register_response.json()
+    assert registered["username"] == "noemail_user"
+    assert registered["email"] == "noemail_user@users.diet-delushan.com"
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={"account": "noemail_user", "password": "StrongPass123"},
+    )
+    assert login_response.status_code == 200
+    assert login_response.json()["user"]["username"] == "noemail_user"
+
+
+def test_register_without_email_still_rejects_duplicate_username(tmp_path):
+    client = make_client(tmp_path)
+
+    first = client.post(
+        "/api/auth/register",
+        json={"username": "same_name", "password": "StrongPass123"},
+    )
+    second = client.post(
+        "/api/auth/register",
+        json={"username": "same_name", "password": "StrongPass123"},
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 400
+    assert second.json()["detail"] == "用户名已存在"
+
+
+def test_register_with_email_keeps_existing_compatibility(tmp_path):
+    client = make_client(tmp_path)
+
+    register_response = client.post(
+        "/api/auth/register",
+        json={"username": "email_user", "email": "email_user@example.com", "password": "StrongPass123"},
+    )
+
+    assert register_response.status_code == 201
+    assert register_response.json()["email"] == "email_user@example.com"
+
+
 def test_chat_sessions_require_login(tmp_path):
     client = make_client(tmp_path)
 

@@ -20,15 +20,6 @@
         </label>
 
         <label>
-          <span>邮箱</span>
-          <input
-            v-model.trim="form.email"
-            type="email"
-            placeholder="请输入邮箱"
-          >
-        </label>
-
-        <label>
           <span>密码</span>
           <input
             v-model.trim="form.password"
@@ -90,7 +81,6 @@ const authStore = useAuthStore()
 // 注册表单数据。
 const form = reactive({
   username: '',
-  email: '',
   password: '',
   confirmPassword: ''
 })
@@ -102,7 +92,7 @@ async function handleRegister() {
   errorMessage.value = ''
   successMessage.value = ''
 
-  if (!form.username || !form.email || !form.password || !form.confirmPassword) {
+  if (!form.username || !form.password || !form.confirmPassword) {
     errorMessage.value = '请完整填写注册信息'
     return
   }
@@ -117,7 +107,6 @@ async function handleRegister() {
   try {
     await authStore.register({
       username: form.username,
-      email: form.email,
       password: form.password
     })
     successMessage.value = '注册成功，正在跳转到登录页'

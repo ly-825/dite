@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -15,12 +17,21 @@ from app.schemas.user import Token, UserCreate, UserInfo, UserLogin
 router = APIRouter(prefix="/api/auth", tags=["认证"])
 
 
+def build_placeholder_email(username: str) -> str:
+    """为免邮箱注册生成内部占位邮箱。"""
+    local_part = re.sub(r"[^a-zA-Z0-9._-]+", "-", username.strip().lower()).strip(".-_")
+    if not local_part:
+        local_part = "user"
+    return f"{local_part}@users.diet-delushan.com"
+
+
 @router.post("/register", response_model=UserInfo, status_code=status.HTTP_201_CREATED)
 def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
     """注册新用户。"""
+    email = str(payload.email) if payload.email else build_placeholder_email(payload.username)
     existed_user = db.execute(
         select(User).where(
-            or_(User.username == payload.username, User.email == payload.email)
+            or_(User.username == payload.username, User.email == email)
         )
     ).scalar_one_or_none()
 
@@ -31,7 +42,7 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> User:
 
     user = User(
         username=payload.username,
-        email=payload.email,
+        email=email,
         password_hash=get_password_hash(payload.password),
     )
     db.add(user)
