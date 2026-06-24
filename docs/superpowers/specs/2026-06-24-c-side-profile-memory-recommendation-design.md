@@ -124,7 +124,6 @@ Create profile schemas in `backend/app/schemas/profile.py`:
 - `UserProfileResponse`
 - `UserProfileUpdate`
 - `UserMemoryResponse`
-- `UserMemoryDecisionRequest`
 - `RecipePlanResponse`
 - `RecipeFeedbackCreate`
 - `RecipeFeedbackResponse`
