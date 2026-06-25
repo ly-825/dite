@@ -107,7 +107,17 @@
                   <strong>{{ record.meal_type }}</strong>
                   <span>{{ formatDateTime(record.recorded_at) }}</span>
                 </div>
-                <span>{{ record.estimated_calories_kcal || 0 }} kcal</span>
+                <div class="record-card__meta">
+                  <span>{{ record.estimated_calories_kcal || 0 }} kcal</span>
+                  <button
+                    class="delete-record-button"
+                    type="button"
+                    :disabled="isDeletingRecord(record.id)"
+                    @click="handleDeleteRecord(record)"
+                  >
+                    {{ isDeletingRecord(record.id) ? '删除中' : '删除' }}
+                  </button>
+                </div>
               </div>
 
               <div class="record-card__foods">
@@ -153,6 +163,18 @@ onMounted(async () => {
 
 async function refresh() {
   await mealsStore.fetchMealDashboard(7)
+}
+
+async function handleDeleteRecord(record) {
+  const confirmed = window.confirm(`删除这条${record.meal_type || '餐食'}记录？删除后不会再进入复盘统计。`)
+  if (!confirmed) {
+    return
+  }
+  await mealsStore.deleteRecord(record.id, 7)
+}
+
+function isDeletingRecord(recordId) {
+  return mealsStore.deletingRecordIds.includes(recordId)
 }
 
 function formatNumber(value) {
@@ -431,6 +453,30 @@ function resolveFoodNames(foods) {
     color: #64748b;
     font-size: 12px;
   }
+}
+
+.record-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 96px;
+}
+
+.delete-record-button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(220, 38, 38, 0.18);
+  border-radius: 8px;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 700;
+  background: #fff7f7;
+}
+
+.delete-record-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .record-card__foods,

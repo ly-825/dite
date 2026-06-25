@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -27,3 +27,16 @@ def get_meal_review(
     db: Session = Depends(get_db),
 ):
     return meal_history_service.build_review(db=db, user_id=current_user.id, days=days)
+
+
+@router.delete("/records/{record_id}", response_model=MealHistoryResponse)
+def delete_meal_record(
+    record_id: int,
+    days: int = Query(default=7, ge=1, le=90),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    deleted = meal_history_service.delete_record(db=db, user_id=current_user.id, record_id=record_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="餐食记录不存在")
+    return meal_history_service.list_records(db=db, user_id=current_user.id, days=days)

@@ -293,6 +293,73 @@ def test_meal_history_is_scoped_to_current_user_and_summarized(tmp_path):
     assert payload["recent_foods"] == ["红烧肉", "米饭"]
 
 
+def test_delete_meal_record_hides_only_current_users_record(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    alice = register_and_login(client, "meal_delete_alice")
+    bob = register_and_login(client, "meal_delete_bob")
+    alice_id = current_user_id(client, alice)
+    bob_id = current_user_id(client, bob)
+    alice_record_id = insert_meal(
+        session_factory,
+        user_id=alice_id,
+        session_id="alice-delete-session",
+        days_ago=0,
+        meal_type="午餐",
+        foods=[{"name": "清炒菜心"}],
+        calories=550,
+        protein=25,
+        carbohydrate=15,
+        fat=35,
+    )
+    keep_record_id = insert_meal(
+        session_factory,
+        user_id=alice_id,
+        session_id="alice-keep-session",
+        days_ago=0,
+        meal_type="晚餐",
+        foods=[{"name": "番茄炒蛋"}],
+        calories=450,
+        protein=20,
+        carbohydrate=25,
+        fat=20,
+    )
+    bob_record_id = insert_meal(
+        session_factory,
+        user_id=bob_id,
+        session_id="bob-delete-session",
+        days_ago=0,
+        meal_type="午餐",
+        foods=[{"name": "清蒸鱼"}],
+        calories=420,
+        protein=36,
+        carbohydrate=30,
+        fat=12,
+    )
+
+    delete_response = client.delete(
+        f"/api/meals/records/{alice_record_id}?days=7",
+        headers=auth_headers(alice),
+    )
+
+    assert delete_response.status_code == 200
+    payload = delete_response.json()
+    assert [item["id"] for item in payload["records"]] == [keep_record_id]
+    assert payload["totals"]["calories_kcal"] == 450
+    assert payload["daily_summaries"][0]["meal_count"] == 1
+
+    cross_user_response = client.delete(
+        f"/api/meals/records/{bob_record_id}?days=7",
+        headers=auth_headers(alice),
+    )
+    assert cross_user_response.status_code == 404
+
+    bob_history_response = client.get("/api/meals/records?days=7", headers=auth_headers(bob))
+    assert [item["id"] for item in bob_history_response.json()["records"]] == [bob_record_id]
+
+    alice_history_response = client.get("/api/meals/records?days=7", headers=auth_headers(alice))
+    assert [item["id"] for item in alice_history_response.json()["records"]] == [keep_record_id]
+
+
 def test_meal_review_flags_high_calories_and_low_protein(tmp_path):
     client, session_factory = make_client(tmp_path)
     token = register_and_login(client, "meal_review")

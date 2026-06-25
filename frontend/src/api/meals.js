@@ -15,3 +15,11 @@ export function getMealReview(params = {}) {
     params
   })
 }
+
+export function deleteMealRecord(recordId, params = {}) {
+  return request({
+    url: `/api/meals/records/${recordId}`,
+    method: 'delete',
+    params
+  })
+}

@@ -64,6 +64,7 @@ export const useChatStore = defineStore('chat', {
     currentWorkflowState: null,
     initializing: false,
     sending: false,
+    activeStreamSessionId: '',
     errorMessage: ''
   }),
   getters: {
@@ -78,6 +79,11 @@ export const useChatStore = defineStore('chat', {
       this.errorMessage = ''
 
       try {
+        if (this.sending && this.currentSessionId) {
+          await this.fetchSessions()
+          return
+        }
+
         await this.fetchSessions()
 
         if (this.sessions.length > 0) {
@@ -108,6 +114,11 @@ export const useChatStore = defineStore('chat', {
     },
     // 切换当前会话。
     async selectSession(sessionId) {
+      if (this.sending && this.activeStreamSessionId && sessionId !== this.activeStreamSessionId) {
+        this.errorMessage = '当前回复还在生成中，请稍后再切换会话。'
+        return null
+      }
+
       const response = await getChatSessionDetail(sessionId)
       const session = response.data
       this.applySessionDetail(session)
@@ -137,6 +148,7 @@ export const useChatStore = defineStore('chat', {
           const session = await this.createSession()
           this.currentSessionId = session.id
         }
+        this.activeStreamSessionId = this.currentSessionId
 
         const optimisticUserMessage = {
           id: createTempId('user'),
@@ -240,7 +252,7 @@ export const useChatStore = defineStore('chat', {
           return null
         }
 
-        this.applySessionDetail(session)
+        this.applySessionDetail(session, { force: true })
         return session
       } catch (error) {
         this.currentMessages = this.currentMessages.map((message) => {
@@ -267,6 +279,7 @@ export const useChatStore = defineStore('chat', {
         throw error
       } finally {
         this.sending = false
+        this.activeStreamSessionId = ''
       }
     },
     // 将会话详情同步到左侧历史列表。
@@ -285,7 +298,13 @@ export const useChatStore = defineStore('chat', {
       )
     },
     // 统一把会话详情同步到当前页面状态。
-    applySessionDetail(sessionDetail) {
+    applySessionDetail(sessionDetail, options = {}) {
+      if (!options.force && this.sending && sessionDetail.id === this.activeStreamSessionId) {
+        this.currentWorkflowState = sessionDetail.workflow_state || this.currentWorkflowState
+        this.upsertSession(sessionDetail)
+        return
+      }
+
       this.currentSessionId = sessionDetail.id
       this.currentMessages = sessionDetail.messages
       this.currentWorkflowState = sessionDetail.workflow_state || null
@@ -298,6 +317,7 @@ export const useChatStore = defineStore('chat', {
       this.currentWorkflowState = null
       this.initializing = false
       this.sending = false
+      this.activeStreamSessionId = ''
       this.errorMessage = ''
     }
   }

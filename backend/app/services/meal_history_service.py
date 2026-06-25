@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.agents.workflow_agents import MealRecordAgent
@@ -20,6 +20,8 @@ from app.schemas.meal_history import (
     MealReviewResponse,
 )
 
+DELETED_FEEDBACK_MARKER = "__deleted__"
+
 
 class MealHistoryService:
     def list_records(self, *, db: Session, user_id: int, days: int = 7) -> MealHistoryResponse:
@@ -32,6 +34,19 @@ class MealHistoryService:
         records = self._load_recent_records(db=db, user_id=user_id, days=days)
         goal = self._load_goal(db=db, user_id=user_id)
         return self._build_review_response(records=records, days=days, goal=goal)
+
+    def delete_record(self, *, db: Session, user_id: int, record_id: int) -> bool:
+        record = db.execute(
+            select(MealRecord)
+            .where(MealRecord.id == record_id, MealRecord.user_id == user_id)
+            .where(or_(MealRecord.user_feedback.is_(None), MealRecord.user_feedback != DELETED_FEEDBACK_MARKER))
+        ).scalar_one_or_none()
+        if record is None:
+            return False
+
+        record.user_feedback = DELETED_FEEDBACK_MARKER
+        db.commit()
+        return True
 
     def build_review_from_records(
         self,
@@ -63,6 +78,7 @@ class MealHistoryService:
             db.execute(
                 select(MealRecord)
                 .where(MealRecord.user_id == user_id, MealRecord.recorded_at >= since)
+                .where(or_(MealRecord.user_feedback.is_(None), MealRecord.user_feedback != DELETED_FEEDBACK_MARKER))
                 .order_by(MealRecord.recorded_at.desc(), MealRecord.id.desc())
             ).scalars().all()
         )
