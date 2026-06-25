@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -104,6 +105,149 @@ def test_meal_records_require_login(tmp_path):
     response = client.get("/api/meals/records")
 
     assert response.status_code == 401
+
+
+def test_single_meal_image_analysis_is_saved_to_history(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path)
+    token = register_and_login(client, "meal_image")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Image meal"},
+        headers=auth_headers(token),
+    ).json()
+
+    monkeypatch.setattr(
+        "app.services.chat_service.llm_service.analyze_single_meal_image",
+        lambda **kwargs: (
+            "## 单张餐食图片分析\n\n"
+            "| 食物 | 估算克数 | 食物类别 |\n"
+            "| --- | ---: | --- |\n"
+            "| 清炒菜心 | 180 克 | 蔬菜 |\n\n"
+            "- 热量：约 180 kcal\n"
+            "- 蛋白质：约 5 g\n"
+            "- 碳水：约 12 g\n"
+            "- 脂肪：约 9 g\n"
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        data={"content": "这是我的午餐，帮我分析并记录。"},
+        files={"file": ("meal.png", b"fake-image", "image/png")},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    history_response = client.get("/api/meals/records?days=7", headers=auth_headers(token))
+
+    assert history_response.status_code == 200
+    records = history_response.json()["records"]
+    assert len(records) == 1
+    assert records[0]["meal_type"] == "午餐"
+    assert records[0]["foods"][0]["food_name"] == "清炒菜心"
+    assert records[0]["foods"][0]["estimated_grams"] == 180
+    assert records[0]["estimated_calories_kcal"] == 180
+
+
+def test_streamed_single_meal_image_analysis_is_saved_to_history(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path)
+    token = register_and_login(client, "meal_stream")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Stream image meal"},
+        headers=auth_headers(token),
+    ).json()
+
+    monkeypatch.setattr(
+        "app.services.chat_service.llm_service.analyze_single_meal_image",
+        lambda **kwargs: (
+            "## 单张餐食图片分析\n\n"
+            "| 食物 | 判断依据 | 估算份量 | 估算克数 | 食物类别 |\n"
+            "| --- | --- | ---: | ---: | --- |\n"
+            "| 清炒菜心 | 绿色茎叶蔬菜 | 1 碗 | 约 180 克 | 蔬菜 |\n\n"
+            "- 热量：约 180 kcal\n"
+            "- 蛋白质：约 5 g\n"
+            "- 碳水：约 12 g\n"
+            "- 脂肪：约 9 g\n"
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages/stream",
+        data={"content": "这是我的午餐，帮我分析并记录。"},
+        files={"file": ("meal.png", b"fake-image", "image/png")},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assert '"type": "done"' in response.text
+
+    history_response = client.get("/api/meals/records?days=7", headers=auth_headers(token))
+    records = history_response.json()["records"]
+    assert len(records) == 1
+    assert records[0]["meal_type"] == "午餐"
+    assert records[0]["foods"][0]["food_name"] == "清炒菜心"
+    assert records[0]["foods"][0]["estimated_grams"] == 180
+
+
+def test_meal_history_backfills_existing_single_image_analysis(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    token = register_and_login(client, "meal_backfill")
+    user_id = current_user_id(client, token)
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Existing image meal"},
+        headers=auth_headers(token),
+    ).json()
+
+    db = session_factory()
+    try:
+        db.add(
+            ChatMessage(
+                id=str(uuid4()),
+                session_id=session["id"],
+                user_id=user_id,
+                role="user",
+                content="这是我的午餐，帮我分析并记录。\n用户上传了图片文件：meal.png",
+                thinking_content="",
+                suggested_questions_json="[]",
+            )
+        )
+        db.add(
+            ChatMessage(
+                id=str(uuid4()),
+                session_id=session["id"],
+                user_id=user_id,
+                role="assistant",
+                content=(
+                    "## 单张餐食图片分析\n\n"
+                    "| 食物 | 判断依据 | 估算份量 | 估算克数 | 食物类别 |\n"
+                    "| --- | --- | ---: | ---: | --- |\n"
+                    "| 清炒菜心 | 绿色茎叶蔬菜 | 1 碗 | 约 180 克 | 蔬菜 |\n\n"
+                    "- 热量：约 180 kcal\n"
+                    "- 蛋白质：约 5 g\n"
+                    "- 碳水：约 12 g\n"
+                    "- 脂肪：约 9 g\n"
+                ),
+                thinking_content="",
+                suggested_questions_json="[]",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/meals/records?days=7", headers=auth_headers(token))
+
+    assert response.status_code == 200
+    records = response.json()["records"]
+    assert len(records) == 1
+    assert records[0]["session_id"] == session["id"]
+    assert records[0]["foods"][0]["food_name"] == "清炒菜心"
+    assert records[0]["estimated_calories_kcal"] == 180
+
+    second_response = client.get("/api/meals/records?days=7", headers=auth_headers(token))
+    assert len(second_response.json()["records"]) == 1
 
 
 def test_meal_history_is_scoped_to_current_user_and_summarized(tmp_path):

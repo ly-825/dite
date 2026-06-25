@@ -424,6 +424,7 @@ class InMemoryChatService:
         with self._lock:
             session = self._get_session(db=db, user_id=user_id, session_id=session_id)
             workflow_state = session["workflow_state"]
+            previous_meal_record_count = len(workflow_state.meal_records)
             user_message = self._build_message(role="user", content=merged_message)
             session["messages"].append(user_message)
             self._push_recent_history(workflow_state, user_message)
@@ -487,6 +488,11 @@ class InMemoryChatService:
         analyzed_content = (result_holder.get("content") or "").strip()
         if analyzed_content:
             assistant_content = analyzed_content
+            self.master_agent.meal_record_agent.record_single_image_analysis(
+                workflow_state,
+                user_message=cleaned_content,
+                analysis_markdown=assistant_content,
+            )
         elif cleaned_content:
             assistant_content = (
                 f"我已经收到图片《{file_name}》。\n\n"
@@ -500,6 +506,13 @@ class InMemoryChatService:
 
         if not accumulated_chunks:
             yield self._build_stream_event("delta", {"content": assistant_content})
+        self._persist_new_meal_records(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            workflow_state=workflow_state,
+            previous_count=previous_meal_record_count,
+        )
         session_detail = self._append_assistant_message(
             session_id=session_id,
             content=assistant_content,
@@ -641,6 +654,7 @@ class InMemoryChatService:
                 session = self._get_session(db=db, user_id=user_id, session_id=session_id)
 
                 workflow_state = session["workflow_state"]
+                previous_meal_record_count = len(workflow_state.meal_records)
                 user_message = self._build_message(role="user", content=merged_message)
                 session["messages"].append(user_message)
                 self._push_recent_history(workflow_state, user_message)
@@ -653,6 +667,11 @@ class InMemoryChatService:
                 )
                 if analyzed_content:
                     assistant_content = analyzed_content
+                    self.master_agent.meal_record_agent.record_single_image_analysis(
+                        workflow_state,
+                        user_message=cleaned_content,
+                        analysis_markdown=assistant_content,
+                    )
                 elif cleaned_content:
                     assistant_content = (
                         f"我已经收到图片《{normalized_name}》。\n\n"
@@ -672,6 +691,13 @@ class InMemoryChatService:
                 session["messages"].append(assistant_reply)
                 self._push_recent_history(workflow_state, assistant_reply)
                 session["updated_at"] = assistant_reply["created_at"]
+                self._persist_new_meal_records(
+                    db=db,
+                    user_id=user_id,
+                    session_id=session_id,
+                    workflow_state=workflow_state,
+                    previous_count=previous_meal_record_count,
+                )
                 self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[assistant_reply])
                 self._persist_session_row(db=db, user_id=user_id, session=session)
                 db.commit()

@@ -7,8 +7,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agents.workflow_agents import MealRecordAgent
+from app.models.chat import ChatMessage
 from app.models.meal_record import MealRecord
 from app.models.user_profile import UserProfile
+from app.schemas.chat import MealRecordData, WorkflowState
 from app.schemas.meal_history import (
     DailyMealSummary,
     MealHistoryResponse,
@@ -20,10 +23,12 @@ from app.schemas.meal_history import (
 
 class MealHistoryService:
     def list_records(self, *, db: Session, user_id: int, days: int = 7) -> MealHistoryResponse:
+        self._backfill_single_image_records_from_chat(db=db, user_id=user_id, days=days)
         records = self._load_recent_records(db=db, user_id=user_id, days=days)
         return self._build_history_response(records=records, days=days)
 
     def build_review(self, *, db: Session, user_id: int, days: int = 7) -> MealReviewResponse:
+        self._backfill_single_image_records_from_chat(db=db, user_id=user_id, days=days)
         records = self._load_recent_records(db=db, user_id=user_id, days=days)
         goal = self._load_goal(db=db, user_id=user_id)
         return self._build_review_response(records=records, days=days, goal=goal)
@@ -65,6 +70,85 @@ class MealHistoryService:
     def _load_goal(self, *, db: Session, user_id: int) -> str:
         profile = db.execute(select(UserProfile).where(UserProfile.user_id == user_id)).scalar_one_or_none()
         return (profile.goal or "").strip() if profile else ""
+
+    def _backfill_single_image_records_from_chat(self, *, db: Session, user_id: int, days: int) -> None:
+        safe_days = max(1, min(days, 90))
+        since = datetime.now() - timedelta(days=safe_days)
+        existing_keys = {
+            (session_id, (analysis_markdown or "").strip())
+            for session_id, analysis_markdown in db.execute(
+                select(MealRecord.session_id, MealRecord.analysis_markdown)
+                .where(MealRecord.user_id == user_id, MealRecord.recorded_at >= since)
+            ).all()
+        }
+        messages = list(
+            db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.user_id == user_id, ChatMessage.created_at >= since)
+                .where(ChatMessage.role.in_(["user", "assistant"]))
+                .order_by(ChatMessage.session_id, ChatMessage.created_at, ChatMessage.id)
+            ).scalars().all()
+        )
+        if not messages:
+            return
+
+        agent = MealRecordAgent()
+        state = WorkflowState()
+        last_user_message_by_session: dict[str, str] = {}
+        created = False
+        for message in messages:
+            if message.role == "user":
+                last_user_message_by_session[message.session_id] = message.content
+                continue
+            if "单张餐食图片分析" not in message.content:
+                continue
+            key = (message.session_id, message.content.strip())
+            if key in existing_keys:
+                continue
+            record = agent.record_single_image_analysis(
+                state,
+                user_message=last_user_message_by_session.get(message.session_id, ""),
+                analysis_markdown=message.content,
+                recorded_at=message.created_at,
+            )
+            if record is None:
+                continue
+            self._add_meal_record_row(
+                db=db,
+                user_id=user_id,
+                session_id=message.session_id,
+                record=record,
+            )
+            existing_keys.add(key)
+            created = True
+        if created:
+            db.commit()
+
+    def _add_meal_record_row(
+        self,
+        *,
+        db: Session,
+        user_id: int,
+        session_id: str,
+        record: MealRecordData,
+    ) -> None:
+        db.add(
+            MealRecord(
+                user_id=user_id,
+                session_id=session_id,
+                recorded_at=record.recorded_at,
+                meal_type=record.meal_type,
+                foods_json=json.dumps(
+                    [food.model_dump(mode="json") for food in record.consumed_items],
+                    ensure_ascii=False,
+                ),
+                estimated_calories_kcal=record.estimated_calories_kcal,
+                estimated_protein_g=record.estimated_protein_g,
+                estimated_carbohydrate_g=record.estimated_carbohydrate_g,
+                estimated_fat_g=record.estimated_fat_g,
+                analysis_markdown=record.analysis_markdown or "",
+            )
+        )
 
     def _build_history_response(self, *, records: list[MealRecord], days: int) -> MealHistoryResponse:
         daily = self._daily_summaries(records)

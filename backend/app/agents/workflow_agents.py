@@ -850,6 +850,111 @@ class MealRecordAgent(BaseAgent):
         self.trace(state, f"已记录 1 条{meal_type}信息，纳入长期饮食追踪。")
         return record
 
+    def record_single_image_analysis(
+            self,
+            state: WorkflowState,
+            *,
+            user_message: str,
+            analysis_markdown: str,
+            recorded_at: datetime | None = None,
+    ) -> MealRecordData | None:
+        consumed_items = self._extract_consumed_items_from_single_image_markdown(analysis_markdown)
+        if not consumed_items:
+            return None
+
+        nutrition = self._extract_nutrition_from_markdown(analysis_markdown)
+        record = MealRecordData(
+            recorded_at=recorded_at or datetime.now(),
+            meal_type=self._resolve_meal_type(user_message),
+            foods=[item.food_name for item in consumed_items],
+            consumed_items=consumed_items,
+            micronutrients=self._estimate_micronutrients(consumed_items),
+            estimated_calories_kcal=self._coerce_int(nutrition.get("calories_kcal")),
+            estimated_protein_g=self._coerce_float(nutrition.get("protein_g")),
+            estimated_carbohydrate_g=self._coerce_float(nutrition.get("carbohydrate_g")),
+            estimated_fat_g=self._coerce_float(nutrition.get("fat_g")),
+            estimated_dietary_fiber_g=self._coerce_float(nutrition.get("dietary_fiber_g")),
+            estimated_sodium_mg=self._coerce_float(nutrition.get("sodium_mg")),
+            analysis_markdown=analysis_markdown.strip(),
+            feedback="已根据单张餐食图片完成摄入估算。",
+        )
+        state.meal_records.append(record)
+        self.trace(state, f"已完成 1 条{record.meal_type}单张餐食图片记录，纳入长期饮食追踪。")
+        return record
+
+    def _extract_consumed_items_from_single_image_markdown(self, markdown: str) -> list[MealConsumedItem]:
+        consumed_items: list[MealConsumedItem] = []
+        seen: set[str] = set()
+        for line in markdown.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or "---" in stripped:
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            food_name = cells[0].strip(" *")
+            if not food_name or food_name in {"食物", "名称", "菜品"} or food_name in seen:
+                continue
+            grams = self._extract_grams(" ".join(cells[1:]))
+            if grams <= 0:
+                continue
+            seen.add(food_name)
+            consumed_items.append(
+                MealConsumedItem(
+                    food_name=food_name,
+                    weight_estimate=cells[1],
+                    estimated_grams=grams,
+                )
+            )
+            if len(consumed_items) >= 8:
+                break
+
+        if consumed_items:
+            return consumed_items
+
+        for match in re.finditer(r"(?:食物|菜品)\s*[:：]\s*([^，,。\n]+).*?(\d{1,4}(?:\.\d+)?)\s*(?:克|g)", markdown, flags=re.IGNORECASE):
+            food_name = match.group(1).strip(" *")
+            if not food_name or food_name in seen:
+                continue
+            grams = self._coerce_int(match.group(2))
+            if grams <= 0:
+                continue
+            seen.add(food_name)
+            consumed_items.append(
+                MealConsumedItem(
+                    food_name=food_name,
+                    weight_estimate=f"约{grams}g",
+                    estimated_grams=grams,
+                )
+            )
+            if len(consumed_items) >= 8:
+                break
+        return consumed_items
+
+    def _extract_grams(self, text: str) -> int:
+        match = re.search(r"(\d{1,4}(?:\.\d+)?)\s*(?:克|g)", text, flags=re.IGNORECASE)
+        if not match:
+            return 0
+        return self._coerce_int(match.group(1))
+
+    def _extract_nutrition_from_markdown(self, markdown: str) -> dict[str, float | int]:
+        patterns = {
+            "calories_kcal": r"(?:热量|能量|卡路里)[^\d]{0,12}(\d{1,5}(?:\.\d+)?)\s*(?:kcal|千卡|大卡)?",
+            "protein_g": r"(?:蛋白质)[^\d]{0,12}(\d{1,4}(?:\.\d+)?)\s*g?",
+            "carbohydrate_g": r"(?:碳水|碳水化合物)[^\d]{0,12}(\d{1,4}(?:\.\d+)?)\s*g?",
+            "fat_g": r"(?:脂肪)[^\d]{0,12}(\d{1,4}(?:\.\d+)?)\s*g?",
+            "dietary_fiber_g": r"(?:膳食纤维|纤维)[^\d]{0,12}(\d{1,4}(?:\.\d+)?)\s*g?",
+            "sodium_mg": r"(?:钠)[^\d]{0,12}(\d{1,5}(?:\.\d+)?)\s*(?:mg|毫克)?",
+        }
+        nutrition: dict[str, float | int] = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, markdown, flags=re.IGNORECASE)
+            if not match:
+                continue
+            value = float(match.group(1))
+            nutrition[key] = int(value) if key == "calories_kcal" else round(value, 1)
+        return nutrition
+
     def _record_from_image_pair(
             self,
             *,
