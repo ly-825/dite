@@ -285,3 +285,58 @@ def test_confirmed_profile_context_loads_into_new_chat_session(tmp_path):
     assert "海鲜" in state["allergy"]
     assert "香菜" in state["diet_preference"]
     assert "血糖偏高" in state["disease"]
+
+
+def test_medical_report_upload_updates_profile_health_concerns(tmp_path):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "report_profile")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Report"},
+        headers=auth_headers(token),
+    ).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/medical-report",
+        data={"report_text": "空腹血糖偏高，低密度脂蛋白偏高，建议控制饮食。"},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    state = response.json()["workflow_state"]
+    assert state["has_medical_report"] is True
+    assert "血糖偏高" in state["disease"]
+    assert "血脂偏高" in state["disease"]
+
+    profile = client.get("/api/profile", headers=auth_headers(token)).json()["profile"]
+    assert profile["has_medical_report"] is True
+    assert "血糖偏高" in profile["health_concerns"]
+    assert "血脂偏高" in profile["health_concerns"]
+
+
+def test_medical_report_upload_does_not_wait_for_llm_suggested_questions(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "report_fast")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Report"},
+        headers=auth_headers(token),
+    ).json()
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("medical report upload should not call LLM suggested questions")
+
+    monkeypatch.setattr(
+        "app.services.chat_service.llm_service.generate_suggested_questions",
+        fail_if_called,
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/medical-report",
+        data={"report_text": "空腹血糖偏高，低密度脂蛋白偏高，建议控制饮食。"},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    message = response.json()["messages"][-1]
+    assert len(message["suggested_questions"]) >= 3

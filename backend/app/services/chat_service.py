@@ -393,6 +393,7 @@ class InMemoryChatService:
         if Path(file_name).suffix.lower() == ".pdf":
             self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
         self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
+        self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
         assistant_content = self._build_report_saved_message(parsed_report)
         yield self._build_stream_event("delta", {"content": assistant_content})
 
@@ -617,6 +618,7 @@ class InMemoryChatService:
             if suffix == ".pdf":
                 self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
             self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
+            self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
             assistant_content = self._build_report_saved_message(parsed_report)
 
             detail = self._append_assistant_message(
@@ -786,13 +788,14 @@ class InMemoryChatService:
                 self._persist_core_report(user_id=user_id, file_bytes=file_bytes)
 
             self._save_user_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
+            self._refresh_recommendation_context(db=db, user_id=user_id, state=session["workflow_state"])
 
             state = session["workflow_state"]
             report_summary = self._build_report_saved_message(parsed_report)
             assistant_reply = self._build_message(
                 role="assistant",
                 content=report_summary,
-                suggested_questions=self._build_suggested_questions(state, report_summary),
+                suggested_questions=self._build_fallback_suggested_questions(state)[:4],
             )
             session["messages"].append(assistant_reply)
             self._push_recent_history(state, assistant_reply)
@@ -1058,9 +1061,7 @@ class InMemoryChatService:
         )
 
     def _save_user_medical_report(self, *, db: Session, user_id: int, parsed_report: str) -> None:
-        profile = self._get_or_create_user_profile(db=db, user_id=user_id)
-        profile.medical_report_text = parsed_report
-        profile.updated_at = datetime.now()
+        profile_service.update_medical_report(db=db, user_id=user_id, parsed_report=parsed_report)
 
     def _apply_medical_report_to_state(self, state: WorkflowState, medical_report: str) -> None:
         state.has_medical_report = True

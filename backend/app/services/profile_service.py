@@ -133,6 +133,46 @@ class CSideProfileService:
         db.commit()
         return self.get_profile_bundle(db=db, user_id=user_id)
 
+    def update_medical_report(self, *, db: Session, user_id: int, parsed_report: str) -> UserProfile:
+        profile = self.get_or_create_profile(db=db, user_id=user_id)
+        profile.medical_report_text = parsed_report
+        health_concerns = self.extract_health_concerns_from_report(parsed_report)
+        if health_concerns:
+            profile.health_concerns_json = json.dumps(
+                normalize_tags([*_loads_list(profile.health_concerns_json), *health_concerns]),
+                ensure_ascii=False,
+            )
+        profile.updated_at = datetime.now()
+        db.flush()
+        return profile
+
+    def extract_health_concerns_from_report(self, text: str) -> list[str]:
+        content = " ".join(text.strip().split())
+        if not content:
+            return []
+
+        rules = [
+            ("血糖偏高", ["血糖", "空腹血糖", "葡萄糖", "糖化血红蛋白", "HbA1c"]),
+            ("血脂偏高", ["血脂", "低密度脂蛋白", "甘油三酯", "总胆固醇", "胆固醇", "LDL"]),
+            ("尿酸偏高", ["尿酸", "UA"]),
+            ("血压偏高", ["血压", "收缩压", "舒张压"]),
+        ]
+        abnormal_terms = ["偏高", "升高", "增高", "异常", "高于", "超标", "↑", "偏高风险"]
+        concerns: list[str] = []
+        for label, indicators in rules:
+            if label in content:
+                concerns.append(label)
+                continue
+            for indicator in indicators:
+                for match in re.finditer(re.escape(indicator), content, flags=re.IGNORECASE):
+                    nearby = content[match.start(): match.end() + 30]
+                    if any(term in nearby for term in abnormal_terms):
+                        concerns.append(label)
+                        break
+                if label in concerns:
+                    break
+        return normalize_tags(concerns)
+
     def extract_memory_candidates(self, text: str) -> list[MemoryCandidate]:
         content = " ".join(text.strip().split())
         if not content:
