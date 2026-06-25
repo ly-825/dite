@@ -20,6 +20,7 @@ from app.models import (  # noqa: F401
     UserProfile,
 )
 from app.services.chat_service import chat_service
+from app.services.profile_service import profile_service
 
 
 @pytest.fixture(autouse=True)
@@ -340,3 +341,26 @@ def test_medical_report_upload_does_not_wait_for_llm_suggested_questions(tmp_pat
     assert response.status_code == 200
     message = response.json()["messages"][-1]
     assert len(message["suggested_questions"]) >= 3
+
+
+def test_profile_backfills_health_concerns_from_existing_report(tmp_path):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    db = TestingSessionLocal()
+    try:
+        profile = profile_service.get_or_create_profile(db=db, user_id=1)
+        profile.medical_report_text = "空腹血糖偏高，低密度脂蛋白偏高，建议控制饮食。"
+        profile.health_concerns_json = "[]"
+        db.commit()
+
+        bundle = profile_service.get_profile_bundle(db=db, user_id=1)
+
+        assert bundle.profile.health_concerns == ["血糖偏高", "血脂偏高"]
+    finally:
+        db.close()

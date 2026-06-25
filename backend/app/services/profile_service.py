@@ -106,6 +106,7 @@ class CSideProfileService:
 
     def get_profile_bundle(self, *, db: Session, user_id: int) -> UserProfileResponse:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
+        self._backfill_health_concerns_from_report(db=db, profile=profile)
         pending = self._list_memories(db=db, user_id=user_id, status="pending")
         confirmed = self._list_memories(db=db, user_id=user_id, status="confirmed")
         plans = self._list_recipe_plans(db=db, user_id=user_id)
@@ -301,6 +302,7 @@ class CSideProfileService:
 
     def build_recommendation_context(self, *, db: Session, user_id: int) -> RecommendationContext:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
+        self._backfill_health_concerns_from_report(db=db, profile=profile)
         feedbacks = self._list_recipe_feedbacks(db=db, user_id=user_id, limit=80)
         recent_since = datetime.now() - timedelta(days=7)
         meals = db.execute(
@@ -397,6 +399,16 @@ class CSideProfileService:
             has_medical_report=bool(profile.medical_report_text),
             medical_report_text=profile.medical_report_text,
         )
+
+    def _backfill_health_concerns_from_report(self, *, db: Session, profile: UserProfile) -> None:
+        if not profile.medical_report_text or _loads_list(profile.health_concerns_json):
+            return
+        health_concerns = self.extract_health_concerns_from_report(profile.medical_report_text)
+        if not health_concerns:
+            return
+        profile.health_concerns_json = json.dumps(health_concerns, ensure_ascii=False)
+        profile.updated_at = datetime.now()
+        db.flush()
 
     def _list_memories(self, *, db: Session, user_id: int, status: str) -> list[UserMemory]:
         return list(
