@@ -70,6 +70,12 @@ const linkedFeatures = [
     agent: 'C 端升级',
     description: '维护目标、忌口、偏好和待确认记忆，让后续推荐更贴合。',
     path: '/profile'
+  },
+  {
+    title: '餐食历史与复盘',
+    agent: 'C 端升级',
+    description: '查看最近 7 天餐食、营养趋势和下一餐调整建议。',
+    path: '/meals'
   }
 ]
 
@@ -87,7 +93,7 @@ const features = [
   {
     title: '饮食历史分析',
     agent: '历史分析服务',
-    description: '汇总历史餐食记录，找出饮食趋势和改进方向。'
+    description: '也可以直接在聊天里询问最近饮食表现，系统会基于已保存记录回答。'
   }
 ]
 

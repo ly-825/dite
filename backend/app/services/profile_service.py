@@ -25,6 +25,7 @@ from app.schemas.profile import (
     UserProfileUpdate,
 )
 from app.services.llm_service import llm_service
+from app.services.meal_history_service import meal_history_service
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,10 @@ class RecommendationContext:
     health_concerns: list[str] = field(default_factory=list)
     disliked_dishes: list[str] = field(default_factory=list)
     liked_dishes: list[str] = field(default_factory=list)
+    recent_foods: list[str] = field(default_factory=list)
     recent_meals: list[dict[str, Any]] = field(default_factory=list)
+    recent_meal_review: dict[str, Any] = field(default_factory=dict)
+    adjustment_hints: list[str] = field(default_factory=list)
 
     def model_dump(self) -> dict[str, Any]:
         return {
@@ -53,7 +57,10 @@ class RecommendationContext:
             "health_concerns": self.health_concerns,
             "disliked_dishes": self.disliked_dishes,
             "liked_dishes": self.liked_dishes,
+            "recent_foods": self.recent_foods,
             "recent_meals": self.recent_meals,
+            "recent_meal_review": self.recent_meal_review,
+            "adjustment_hints": self.adjustment_hints,
         }
 
 
@@ -265,6 +272,12 @@ class CSideProfileService:
             item.dish_name for item in feedbacks if item.feedback_type in {"dislike", "unavailable", "too_complex"}
         ])
         liked = normalize_tags([item.dish_name for item in feedbacks if item.feedback_type == "like"])
+        recent_foods = meal_history_service.extract_recent_foods(meals)
+        meal_review = meal_history_service.build_review_from_records(
+            records=meals,
+            days=7,
+            goal=profile.goal or "",
+        )
         return RecommendationContext(
             goal=profile.goal or "",
             allergies=_loads_list(profile.allergy_json),
@@ -273,6 +286,7 @@ class CSideProfileService:
             health_concerns=_loads_list(profile.health_concerns_json),
             disliked_dishes=disliked,
             liked_dishes=liked,
+            recent_foods=recent_foods,
             recent_meals=[
                 {
                     "recorded_at": meal.recorded_at.isoformat(),
@@ -285,6 +299,8 @@ class CSideProfileService:
                 }
                 for meal in meals
             ],
+            recent_meal_review=meal_review.model_dump(mode="json"),
+            adjustment_hints=[*meal_review.problems, *meal_review.suggestions],
         )
 
     def create_recipe_feedback(

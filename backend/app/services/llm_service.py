@@ -786,20 +786,21 @@ class DashScopeLLMService:
             candidates=recipe_database_candidates,
             plan_scope=plan_scope,
         )
+        recommendation_context = workflow_state.recommendation_context or {}
 
         payload = {
-            # "用户输入": user_message,
-            # "计划范围": plan_scope,
-            # "目标": workflow_state.goal or "未明确",
-            # "地区": region,
-            # "饮食偏好": workflow_state.diet_preference,
-            # "过敏信息": workflow_state.allergy,
-            # "健康限制": workflow_state.disease,
-            # "营养目标": nutrition.model_dump(mode="json"),
-            # "季节": season,
-            # "月份": month_label,
-            # "当前时段": time_of_day,
-            # "当前日期时间": current_datetime,
+            "用户画像与推荐约束": {
+                "目标": workflow_state.goal or recommendation_context.get("goal") or "未明确",
+                "饮食偏好": workflow_state.diet_preference,
+                "过敏信息": workflow_state.allergy,
+                "健康限制": workflow_state.disease,
+                "不喜欢或不可用菜品": recommendation_context.get("disliked_dishes", []),
+                "喜欢菜品": recommendation_context.get("liked_dishes", []),
+            },
+            "最近7天餐食记录": recommendation_context.get("recent_meals", []),
+            "最近7天饮食复盘": recommendation_context.get("recent_meal_review", {}),
+            "最近吃过的食物": recommendation_context.get("recent_foods", []),
+            "本次调整提示": recommendation_context.get("adjustment_hints", []),
             "近期对话": recent_history[-LLM_HISTORY_LIMIT:],
             "食谱数据库筛选条件": recipe_filter_conditions,
             "食谱地区优先级": recipe_region_priority,
@@ -962,6 +963,8 @@ class DashScopeLLMService:
             # f"食谱范围：{scope_text}\n"
             # f"数据库筛选条件：{self._dump_llm_payload(recipe_filter_conditions)}\n"
             "请结合附加信息中的“近期对话”字段理解用户最近的连续需求、忌口、口味、补充条件和上下文，不要只看当前这一句。\n"
+            "必须结合附加信息中的“最近7天餐食记录”“最近7天饮食复盘”和“本次调整提示”：如果最近热量偏高，本次计划应降低总热量或减少高脂高热量菜；如果蛋白质不足，应提高优质蛋白比例；如果最近吃过某些菜品，近3天内尽量减少重复。\n"
+            "必须避开附加信息“用户画像与推荐约束”里的过敏、忌口、不喜欢或不可用菜品；如果候选餐次计划包含这些菜品，优先替换为同类候选。\n"
             "如果附加信息“食谱地区优先级”里有用户输入具体地区类，请优先从该类菜品生成食谱；只有具体地区类菜品不足时，再使用通用补充类补齐，不要反过来优先使用通用菜品。\n"
             "请优先使用附加信息中的“候选餐次计划”作为菜品来源；如果用户没有在输入中规定每餐怎么去搭配，则默认午餐和晚餐按“主食1个+汤1个+荤菜1个+素菜1个”整理，水产类按荤菜处理；早餐从早餐类选择1到2个；加餐从主食类或早餐类选择1个。\n"
             "食物元素归类必须使用“候选餐次计划”中每道菜的“食材”和“食材分类”字段，只允许基于这些食材重新估算克数和营养，不允许把菜品名复制到食物元素归类里。\n"
