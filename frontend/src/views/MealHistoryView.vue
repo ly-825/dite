@@ -181,9 +181,12 @@ function resolveFoodNames(foods) {
 
 <style lang="scss" scoped>
 .meal-page {
-  min-height: 100dvh;
+  height: 100dvh;
   padding: 18px;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 52%, #ecfdf5 100%);
+  -webkit-overflow-scrolling: touch;
 }
 
 .meal-shell {
