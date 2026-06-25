@@ -315,6 +315,31 @@ def test_medical_report_upload_updates_profile_health_concerns(tmp_path):
     assert "血脂偏高" in profile["health_concerns"]
 
 
+def test_medical_report_upload_updates_profile_basic_metrics(tmp_path):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "report_metrics")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Report"},
+        headers=auth_headers(token),
+    ).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/medical-report",
+        data={
+            "report_text": "姓名：测试用户\n性别：女\n年龄：34岁\n身高：168cm\n体重：59.5kg\n空腹血糖偏高。"
+        },
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    profile = client.get("/api/profile", headers=auth_headers(token)).json()["profile"]
+    assert profile["age"] == 34
+    assert profile["gender"] == "女"
+    assert profile["height_cm"] == 168
+    assert profile["weight_kg"] == 59.5
+
+
 def test_medical_report_upload_does_not_wait_for_llm_suggested_questions(tmp_path, monkeypatch):
     client = make_client(tmp_path)
     token = register_and_login(client, "report_fast")
@@ -362,5 +387,30 @@ def test_profile_backfills_health_concerns_from_existing_report(tmp_path):
         bundle = profile_service.get_profile_bundle(db=db, user_id=1)
 
         assert bundle.profile.health_concerns == ["血糖偏高", "血脂偏高"]
+    finally:
+        db.close()
+
+
+def test_profile_backfills_basic_metrics_from_existing_report(tmp_path):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    db = TestingSessionLocal()
+    try:
+        profile = profile_service.get_or_create_profile(db=db, user_id=1)
+        profile.medical_report_text = "基本信息：男，年龄 41岁，身高 176.5 cm，体重 82 kg。"
+        db.commit()
+
+        bundle = profile_service.get_profile_bundle(db=db, user_id=1)
+
+        assert bundle.profile.age == 41
+        assert bundle.profile.gender == "男"
+        assert bundle.profile.height_cm == 176.5
+        assert bundle.profile.weight_kg == 82
     finally:
         db.close()

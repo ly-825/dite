@@ -106,7 +106,7 @@ class CSideProfileService:
 
     def get_profile_bundle(self, *, db: Session, user_id: int) -> UserProfileResponse:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
-        self._backfill_health_concerns_from_report(db=db, profile=profile)
+        self._backfill_profile_from_report(db=db, profile=profile)
         pending = self._list_memories(db=db, user_id=user_id, status="pending")
         confirmed = self._list_memories(db=db, user_id=user_id, status="confirmed")
         plans = self._list_recipe_plans(db=db, user_id=user_id)
@@ -137,6 +137,7 @@ class CSideProfileService:
     def update_medical_report(self, *, db: Session, user_id: int, parsed_report: str) -> UserProfile:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
         profile.medical_report_text = parsed_report
+        self._apply_basic_metrics_from_report(profile=profile, text=parsed_report, only_missing=False)
         health_concerns = self.extract_health_concerns_from_report(parsed_report)
         if health_concerns:
             profile.health_concerns_json = json.dumps(
@@ -146,6 +147,60 @@ class CSideProfileService:
         profile.updated_at = datetime.now()
         db.flush()
         return profile
+
+    def extract_basic_metrics_from_report(self, text: str) -> dict[str, int | float | str]:
+        content = " ".join(text.strip().split())
+        if not content:
+            return {}
+
+        metrics: dict[str, int | float | str] = {}
+        age_match = re.search(r"(?:年龄|Age|AGE)\s*[:：]?\s*(\d{1,3})\s*(?:岁|years?|Y|y)?", content)
+        if age_match:
+            age = int(age_match.group(1))
+            if 1 <= age <= 120:
+                metrics["age"] = age
+
+        gender_match = re.search(
+            r"(?:性别|Gender|GENDER)\s*[:：]?\s*(女性|男性|女|男|female|male|F|M)(?=\b|[，,。\s]|$)",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if gender_match is None:
+            gender_match = re.search(r"(?:^|[：:，,。\s])(女性|男性|女|男)(?=[，,。\s]|$)", content)
+        if gender_match:
+            raw_gender = gender_match.group(1).lower()
+            if raw_gender in {"女", "女性", "female", "f"}:
+                metrics["gender"] = "女"
+            elif raw_gender in {"男", "男性", "male", "m"}:
+                metrics["gender"] = "男"
+
+        height_match = re.search(
+            r"(?:身高|Height|HEIGHT)\s*[:：]?\s*(\d{1,3}(?:\.\d+)?)\s*(cm|厘米|公分|m|米)?",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if height_match:
+            height = float(height_match.group(1))
+            unit = (height_match.group(2) or "cm").lower()
+            if unit in {"m", "米"} and height < 3:
+                height *= 100
+            if 50 <= height <= 260:
+                metrics["height_cm"] = round(height, 1)
+
+        weight_match = re.search(
+            r"(?:体重|Weight|WEIGHT)\s*[:：]?\s*(\d{1,3}(?:\.\d+)?)\s*(kg|公斤|千克|斤)?",
+            content,
+            flags=re.IGNORECASE,
+        )
+        if weight_match:
+            weight = float(weight_match.group(1))
+            unit = (weight_match.group(2) or "kg").lower()
+            if unit == "斤":
+                weight /= 2
+            if 10 <= weight <= 400:
+                metrics["weight_kg"] = round(weight, 1)
+
+        return metrics
 
     def extract_health_concerns_from_report(self, text: str) -> list[str]:
         content = " ".join(text.strip().split())
@@ -302,7 +357,7 @@ class CSideProfileService:
 
     def build_recommendation_context(self, *, db: Session, user_id: int) -> RecommendationContext:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
-        self._backfill_health_concerns_from_report(db=db, profile=profile)
+        self._backfill_profile_from_report(db=db, profile=profile)
         feedbacks = self._list_recipe_feedbacks(db=db, user_id=user_id, limit=80)
         recent_since = datetime.now() - timedelta(days=7)
         meals = db.execute(
@@ -400,15 +455,45 @@ class CSideProfileService:
             medical_report_text=profile.medical_report_text,
         )
 
-    def _backfill_health_concerns_from_report(self, *, db: Session, profile: UserProfile) -> None:
-        if not profile.medical_report_text or _loads_list(profile.health_concerns_json):
+    def _backfill_profile_from_report(self, *, db: Session, profile: UserProfile) -> None:
+        if not profile.medical_report_text:
+            return
+        changed = self._apply_basic_metrics_from_report(
+            profile=profile,
+            text=profile.medical_report_text,
+            only_missing=True,
+        )
+        if _loads_list(profile.health_concerns_json):
+            if changed:
+                profile.updated_at = datetime.now()
+                db.flush()
             return
         health_concerns = self.extract_health_concerns_from_report(profile.medical_report_text)
-        if not health_concerns:
+        if health_concerns:
+            profile.health_concerns_json = json.dumps(health_concerns, ensure_ascii=False)
+            changed = True
+        if not changed:
             return
-        profile.health_concerns_json = json.dumps(health_concerns, ensure_ascii=False)
         profile.updated_at = datetime.now()
         db.flush()
+
+    def _apply_basic_metrics_from_report(
+        self,
+        *,
+        profile: UserProfile,
+        text: str,
+        only_missing: bool,
+    ) -> bool:
+        metrics = self.extract_basic_metrics_from_report(text)
+        changed = False
+        for field_name, value in metrics.items():
+            if only_missing and getattr(profile, field_name) is not None:
+                continue
+            if getattr(profile, field_name) == value:
+                continue
+            setattr(profile, field_name, value)
+            changed = True
+        return changed
 
     def _list_memories(self, *, db: Session, user_id: int, status: str) -> list[UserMemory]:
         return list(
