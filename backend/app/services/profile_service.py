@@ -159,7 +159,7 @@ class CSideProfileService:
             unique.append(item)
         return unique
 
-    def save_pending_memories(
+    def save_chat_memories(
         self,
         *,
         db: Session,
@@ -184,10 +184,11 @@ class CSideProfileService:
                 memory_type=candidate.memory_type,
                 content=candidate.content,
                 source="chat",
-                status="pending",
+                status="confirmed",
                 source_session_id=session_id,
             )
             db.add(row)
+            self._apply_memory_to_profile(db=db, user_id=user_id, memory=row)
             saved.append(row)
         if saved:
             db.flush()
@@ -209,6 +210,14 @@ class CSideProfileService:
             raise HTTPException(status_code=400, detail="只能拒绝待确认记忆")
         memory.status = "rejected"
         memory.updated_at = datetime.now()
+        db.commit()
+        return self.get_profile_bundle(db=db, user_id=user_id)
+
+    def delete_memory(self, *, db: Session, user_id: int, memory_id: int) -> UserProfileResponse:
+        memory = self._get_memory_for_user(db=db, user_id=user_id, memory_id=memory_id)
+        if memory.status == "confirmed":
+            self._remove_memory_from_profile(db=db, user_id=user_id, memory=memory)
+        db.delete(memory)
         db.commit()
         return self.get_profile_bundle(db=db, user_id=user_id)
 
@@ -361,6 +370,7 @@ class CSideProfileService:
         profile = self.get_or_create_profile(db=db, user_id=user_id)
         if memory.memory_type == "goal":
             profile.goal = memory.content
+            profile.updated_at = datetime.now()
             return
         field_map = {
             "allergy": "allergy_json",
@@ -373,6 +383,26 @@ class CSideProfileService:
             return
         values = _loads_list(getattr(profile, field_name))
         values = normalize_tags([*values, memory.content])
+        setattr(profile, field_name, json.dumps(values, ensure_ascii=False))
+        profile.updated_at = datetime.now()
+
+    def _remove_memory_from_profile(self, *, db: Session, user_id: int, memory: UserMemory) -> None:
+        profile = self.get_or_create_profile(db=db, user_id=user_id)
+        if memory.memory_type == "goal":
+            if profile.goal == memory.content:
+                profile.goal = ""
+                profile.updated_at = datetime.now()
+            return
+        field_map = {
+            "allergy": "allergy_json",
+            "taboo": "taboo_json",
+            "preference": "diet_preference_json",
+            "health_concern": "health_concerns_json",
+        }
+        field_name = field_map.get(memory.memory_type)
+        if field_name is None:
+            return
+        values = [item for item in _loads_list(getattr(profile, field_name)) if item != memory.content]
         setattr(profile, field_name, json.dumps(values, ensure_ascii=False))
         profile.updated_at = datetime.now()
 

@@ -45,6 +45,15 @@ def reject_memory(
     return profile_service.reject_memory(db=db, user_id=current_user.id, memory_id=memory_id)
 
 
+@router.delete("/memories/{memory_id}", response_model=UserProfileResponse)
+def delete_memory(
+    memory_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return profile_service.delete_memory(db=db, user_id=current_user.id, memory_id=memory_id)
+
+
 @router.post("/recipe-feedbacks", response_model=RecipeFeedbackResponse, status_code=status.HTTP_201_CREATED)
 def create_recipe_feedback(
     payload: RecipeFeedbackCreate,

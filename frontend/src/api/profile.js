@@ -29,6 +29,13 @@ export function rejectMemory(memoryId) {
   })
 }
 
+export function deleteMemory(memoryId) {
+  return request({
+    url: `/api/profile/memories/${memoryId}`,
+    method: 'delete'
+  })
+}
+
 export function createRecipeFeedback(data) {
   return request({
     url: '/api/profile/recipe-feedbacks',

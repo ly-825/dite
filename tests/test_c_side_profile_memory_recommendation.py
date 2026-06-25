@@ -100,7 +100,7 @@ def test_profile_is_scoped_to_current_user_and_normalizes_tags(tmp_path):
     assert bob_response.json()["profile"]["allergies"] == []
 
 
-def test_chat_extracts_pending_memory_and_confirmation_updates_profile(tmp_path):
+def test_chat_auto_confirms_memory_and_mentions_saved_items(tmp_path):
     client = make_client(tmp_path)
     token = register_and_login(client, "memory_user")
     session = client.post(
@@ -115,39 +115,48 @@ def test_chat_extracts_pending_memory_and_confirmation_updates_profile(tmp_path)
         headers=auth_headers(token),
     )
     assert response.status_code == 200
+    assistant_reply = response.json()["messages"][-1]["content"]
+    assert "已记住" in assistant_reply
+    assert "香菜" in assistant_reply
+    assert "花生" in assistant_reply
 
     profile = client.get("/api/profile", headers=auth_headers(token)).json()
-    pending = profile["pending_memories"]
-    pending_pairs = [{"memory_type": item["memory_type"], "content": item["content"]} for item in pending]
-    assert {"memory_type": "taboo", "content": "香菜"} in pending_pairs
-    assert {"memory_type": "allergy", "content": "花生"} in pending_pairs
+    confirmed = profile["confirmed_memories"]
+    confirmed_pairs = [{"memory_type": item["memory_type"], "content": item["content"]} for item in confirmed]
+    assert profile["pending_memories"] == []
+    assert {"memory_type": "taboo", "content": "香菜"} in confirmed_pairs
+    assert {"memory_type": "allergy", "content": "花生"} in confirmed_pairs
+    assert "香菜" in profile["profile"]["taboos"]
+    assert "花生" in profile["profile"]["allergies"]
 
-    taboo_memory = next(item for item in pending if item["memory_type"] == "taboo")
-    confirm = client.post(
-        f"/api/profile/memories/{taboo_memory['id']}/confirm",
+    taboo_memory = next(item for item in confirmed if item["memory_type"] == "taboo")
+    delete = client.delete(
+        f"/api/profile/memories/{taboo_memory['id']}",
         headers=auth_headers(token),
     )
-    assert confirm.status_code == 200
-    assert "香菜" in confirm.json()["profile"]["taboos"]
+    assert delete.status_code == 200
+    assert "香菜" not in delete.json()["profile"]["taboos"]
 
 
-def test_rejected_memory_does_not_update_profile(tmp_path):
+def test_duplicate_auto_confirmed_memory_is_not_saved_twice(tmp_path):
     client = make_client(tmp_path)
-    token = register_and_login(client, "reject_memory")
-    session = client.post("/api/chat/sessions", json={"title": "Reject"}, headers=auth_headers(token)).json()
+    token = register_and_login(client, "dedupe_memory")
+    session = client.post("/api/chat/sessions", json={"title": "Dedupe"}, headers=auth_headers(token)).json()
 
-    client.post(
-        f"/api/chat/sessions/{session['id']}/messages",
-        json={"content": "我喜欢红烧肉。"},
-        headers=auth_headers(token),
-    )
+    for _ in range(2):
+        client.post(
+            f"/api/chat/sessions/{session['id']}/messages",
+            json={"content": "我喜欢红烧肉。"},
+            headers=auth_headers(token),
+        )
+
     profile = client.get("/api/profile", headers=auth_headers(token)).json()
-    memory = next(item for item in profile["pending_memories"] if item["memory_type"] == "preference")
-
-    reject = client.post(f"/api/profile/memories/{memory['id']}/reject", headers=auth_headers(token))
-
-    assert reject.status_code == 200
-    assert "红烧肉" not in reject.json()["profile"]["preferences"]
+    confirmed = [
+        item for item in profile["confirmed_memories"]
+        if item["memory_type"] == "preference" and item["content"] == "红烧肉"
+    ]
+    assert len(confirmed) == 1
+    assert profile["profile"]["preferences"] == ["红烧肉"]
 
 
 def test_recipe_feedback_and_context_are_scoped_to_user(tmp_path):

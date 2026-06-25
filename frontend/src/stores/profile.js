@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import {
   confirmMemory,
   createRecipeFeedback,
+  deleteMemory,
   getProfileBundle,
   rejectMemory,
   updateProfile
@@ -94,6 +95,11 @@ export const useProfileStore = defineStore('profile', {
     },
     async rejectMemory(memoryId) {
       const response = await rejectMemory(memoryId)
+      this.applyBundle(response.data)
+      return this.bundle
+    },
+    async deleteMemory(memoryId) {
+      const response = await deleteMemory(memoryId)
       this.applyBundle(response.data)
       return this.bundle
     },

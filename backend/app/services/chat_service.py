@@ -28,6 +28,7 @@ from app.agents.workflow_agents import (
 from app.db.session import SessionLocal
 from app.models.chat import ChatMessage as ChatMessageRow, ChatSession as ChatSessionRow
 from app.models.meal_record import MealRecord
+from app.models.user_memory import UserMemory
 from app.models.user_profile import UserProfile
 from app.schemas.chat import (
     ChatMessage as ChatMessageSchema,
@@ -153,7 +154,7 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
-        self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
         previous_meal_record_count = len(workflow_state.meal_records)
         assistant_content = self.master_agent.handle_message(
@@ -162,6 +163,7 @@ class InMemoryChatService:
             session_id=session_id,
             user_id=user_id,
         )
+        assistant_content = self._append_memory_saved_notice(assistant_content, saved_memories)
         self._persist_new_meal_records(
             db=db,
             user_id=user_id,
@@ -210,7 +212,7 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
-        self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
         previous_meal_record_count = len(workflow_state.meal_records)
         accumulated_chunks: list[str] = []
@@ -237,6 +239,10 @@ class InMemoryChatService:
                 yield self._build_stream_event("delta", {"content": chunk_content})
 
             final_content = "".join(accumulated_chunks).strip()
+            memory_notice = self._build_memory_saved_notice(saved_memories)
+            if memory_notice:
+                final_content = self._append_memory_saved_notice(final_content, saved_memories)
+                yield self._build_stream_event("delta", {"content": f"\n\n{memory_notice}"})
             final_thinking_content = "".join(accumulated_thinking_chunks).strip()
             self._persist_new_meal_records(
                 db=db,
@@ -902,13 +908,35 @@ class InMemoryChatService:
         state.disease = list(dict.fromkeys([*state.disease, *context.health_concerns]))
         state.recommendation_context = context.model_dump()
 
-    def _remember_user_text(self, *, db: Session, user_id: int, session_id: str, text: str) -> None:
-        profile_service.save_pending_memories(
+    def _remember_user_text(self, *, db: Session, user_id: int, session_id: str, text: str) -> list[UserMemory]:
+        return profile_service.save_chat_memories(
             db=db,
             user_id=user_id,
             session_id=session_id,
             text=text,
         )
+
+    def _append_memory_saved_notice(self, assistant_content: str, memories: list[UserMemory]) -> str:
+        notice = self._build_memory_saved_notice(memories)
+        if not notice:
+            return assistant_content
+        return f"{assistant_content.rstrip()}\n\n{notice}"
+
+    def _build_memory_saved_notice(self, memories: list[UserMemory]) -> str:
+        if not memories:
+            return ""
+        type_labels = {
+            "goal": "目标",
+            "allergy": "过敏",
+            "taboo": "忌口",
+            "preference": "偏好",
+            "health_concern": "健康关注",
+        }
+        parts = [
+            f"{type_labels.get(memory.memory_type, memory.memory_type)}：{memory.content}"
+            for memory in memories
+        ]
+        return f"已记住：{'；'.join(parts)}。可在「我的营养画像」里删除或修改。"
 
     def _save_recipe_plan_if_available(
         self,

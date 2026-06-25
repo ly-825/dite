@@ -97,7 +97,7 @@
         <aside class="memory-panel">
           <section class="memory-section">
             <div class="section-title">
-              <span>待确认记忆</span>
+              <span>待处理记忆</span>
               <strong>{{ profileStore.pendingMemories.length }}</strong>
             </div>
             <div class="memory-list">
@@ -115,7 +115,7 @@
                   <button type="button" class="ghost-button" @click="handleRejectMemory(memory.id)">忽略</button>
                 </div>
               </article>
-              <p v-if="profileStore.pendingMemories.length === 0" class="empty-state">聊天中识别到的新偏好会出现在这里。</p>
+              <p v-if="profileStore.pendingMemories.length === 0" class="empty-state">聊天中识别到的偏好会自动记住，少数旧记录会出现在这里。</p>
             </div>
           </section>
 
@@ -125,14 +125,16 @@
               <strong>{{ profileStore.confirmedMemories.length }}</strong>
             </div>
             <div class="confirmed-list">
-              <span
+              <button
                 v-for="memory in profileStore.confirmedMemories"
                 :key="memory.id"
-                class="chip"
+                type="button"
+                class="chip chip--editable"
+                @click="handleDeleteMemory(memory.id)"
               >
-                {{ memoryTypeLabel(memory.memory_type) }} · {{ memory.content }}
-              </span>
-              <p v-if="profileStore.confirmedMemories.length === 0" class="empty-state">确认后的记忆会自动参与后续推荐。</p>
+                {{ memoryTypeLabel(memory.memory_type) }} · {{ memory.content }} ×
+              </button>
+              <p v-if="profileStore.confirmedMemories.length === 0" class="empty-state">聊天中自动记住的内容会参与后续推荐，也可以随时删除。</p>
             </div>
           </section>
         </aside>
@@ -299,6 +301,10 @@ async function handleConfirmMemory(memoryId) {
 
 async function handleRejectMemory(memoryId) {
   await profileStore.rejectMemory(memoryId)
+}
+
+async function handleDeleteMemory(memoryId) {
+  await profileStore.deleteMemory(memoryId)
 }
 
 async function handleDishFeedback(recipePlanId, dishName, feedbackType) {
