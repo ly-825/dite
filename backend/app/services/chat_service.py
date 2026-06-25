@@ -156,6 +156,13 @@ class InMemoryChatService:
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
+        if self._is_memory_only_message(cleaned_content, saved_memories):
+            assistant_content = self._build_memory_saved_notice(saved_memories)
+            detail = self._append_assistant_message(session_id=session_id, content=assistant_content, session=session)
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+            self._persist_session_row(db=db, user_id=user_id, session=session)
+            db.commit()
+            return detail
         previous_meal_record_count = len(workflow_state.meal_records)
         assistant_content = self.master_agent.handle_message(
             workflow_state,
@@ -214,6 +221,23 @@ class InMemoryChatService:
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
         saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
+        if self._is_memory_only_message(cleaned_content, saved_memories):
+            assistant_content = self._build_memory_saved_notice(saved_memories)
+            session_detail = self._append_assistant_message(
+                session_id=session_id,
+                content=assistant_content,
+                session=session,
+            )
+            self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
+            self._persist_session_row(db=db, user_id=user_id, session=session)
+            db.commit()
+            yield self._build_stream_event("start", {"session_id": session_id})
+            yield self._build_stream_event("delta", {"content": assistant_content})
+            yield self._build_stream_event(
+                "done",
+                {"session_detail": session_detail.model_dump(mode="json")},
+            )
+            return
         previous_meal_record_count = len(workflow_state.meal_records)
         accumulated_chunks: list[str] = []
         accumulated_thinking_chunks: list[str] = []
@@ -937,6 +961,35 @@ class InMemoryChatService:
             for memory in memories
         ]
         return f"已记住：{'；'.join(parts)}。可在「我的营养画像」里删除或修改。"
+
+    def _is_memory_only_message(self, text: str, memories: list[UserMemory]) -> bool:
+        if not memories:
+            return False
+        ask_keywords = [
+            "帮我",
+            "生成",
+            "做一份",
+            "来一份",
+            "安排一",
+            "规划",
+            "食谱",
+            "菜单",
+            "三餐",
+            "吃什么",
+            "怎么吃",
+            "怎么安排",
+            "推荐吃",
+            "建议吃",
+            "早餐",
+            "午餐",
+            "晚餐",
+            "热量",
+            "营养",
+            "蛋白质",
+            "碳水",
+            "脂肪",
+        ]
+        return not any(keyword in text for keyword in ask_keywords)
 
     def _save_recipe_plan_if_available(
         self,

@@ -116,9 +116,13 @@ def test_chat_auto_confirms_memory_and_mentions_saved_items(tmp_path):
     )
     assert response.status_code == 200
     assistant_reply = response.json()["messages"][-1]["content"]
+    assert assistant_reply.startswith("已记住")
     assert "已记住" in assistant_reply
     assert "香菜" in assistant_reply
     assert "花生" in assistant_reply
+    assert "食谱建议" not in assistant_reply
+    assert "早餐" not in assistant_reply
+    assert "午餐" not in assistant_reply
 
     profile = client.get("/api/profile", headers=auth_headers(token)).json()
     confirmed = profile["confirmed_memories"]
@@ -157,6 +161,24 @@ def test_duplicate_auto_confirmed_memory_is_not_saved_twice(tmp_path):
     ]
     assert len(confirmed) == 1
     assert profile["profile"]["preferences"] == ["红烧肉"]
+
+
+def test_memory_message_with_explicit_recipe_request_still_generates_recipe(tmp_path):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "memory_recipe")
+    session = client.post("/api/chat/sessions", json={"title": "Memory Recipe"}, headers=auth_headers(token)).json()
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "我不吃香菜，帮我做一份减脂食谱。"},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assistant_reply = response.json()["messages"][-1]["content"]
+    assert "食谱建议" in assistant_reply
+    assert "已记住" in assistant_reply
+    assert "香菜" in client.get("/api/profile", headers=auth_headers(token)).json()["profile"]["taboos"]
 
 
 def test_recipe_feedback_and_context_are_scoped_to_user(tmp_path):
