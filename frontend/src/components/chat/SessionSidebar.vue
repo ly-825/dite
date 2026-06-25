@@ -42,6 +42,14 @@
         暂无历史对话，点击上方按钮开始第一轮营养咨询。
       </div>
     </div>
+
+    <div class="account-panel">
+      <div>
+        <span>当前账号</span>
+        <strong>{{ userInfo?.username || '已登录用户' }}</strong>
+      </div>
+      <button type="button" @click="$emit('logout')">退出登录</button>
+    </div>
   </aside>
 </template>
 
@@ -54,10 +62,14 @@ defineProps({
   currentSessionId: {
     type: String,
     default: ''
+  },
+  userInfo: {
+    type: Object,
+    default: null
   }
 })
 
-defineEmits(['create', 'select'])
+defineEmits(['create', 'select', 'logout'])
 
 // 将时间格式化为更易阅读的中文样式。
 function formatDate(value) {
@@ -226,6 +238,53 @@ function formatDate(value) {
   color: #6b7280;
   line-height: 1.7;
   font-size: 14px;
+}
+
+.account-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(34, 197, 94, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.76);
+
+  div {
+    min-width: 0;
+  }
+
+  span,
+  strong {
+    display: block;
+  }
+
+  span {
+    color: #6b7280;
+    font-size: 11px;
+  }
+
+  strong {
+    margin-top: 3px;
+    overflow: hidden;
+    color: #14532d;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  button {
+    flex: 0 0 auto;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid rgba(220, 38, 38, 0.18);
+    border-radius: 8px;
+    color: #b91c1c;
+    background: #fff7f7;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
 }
 
 .session-sidebar {

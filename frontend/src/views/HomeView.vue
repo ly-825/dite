@@ -4,8 +4,10 @@
       <SessionSidebar
         :sessions="chatStore.sessions"
         :current-session-id="chatStore.currentSessionId"
+        :user-info="authStore.userInfo"
         @create="handleCreateSession"
         @select="handleSelectSession"
+        @logout="handleLogout"
       />
 
       <ChatPanel
@@ -58,12 +60,16 @@
 
 <script setup>
 import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 
 import ChatPanel from '../components/chat/ChatPanel.vue'
 import SessionSidebar from '../components/chat/SessionSidebar.vue'
+import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
 
 const chatStore = useChatStore()
+const authStore = useAuthStore()
+const router = useRouter()
 const linkedFeatures = [
   {
     title: '我的营养画像',
@@ -120,6 +126,12 @@ async function handleSendMessage(content) {
   } catch (error) {
     console.error(error)
   }
+}
+
+async function handleLogout() {
+  authStore.logout()
+  chatStore.resetState()
+  await router.push('/login')
 }
 
 </script>

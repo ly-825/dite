@@ -290,6 +290,15 @@ export const useChatStore = defineStore('chat', {
       this.currentMessages = sessionDetail.messages
       this.currentWorkflowState = sessionDetail.workflow_state || null
       this.upsertSession(sessionDetail)
+    },
+    resetState() {
+      this.sessions = []
+      this.currentSessionId = ''
+      this.currentMessages = []
+      this.currentWorkflowState = null
+      this.initializing = false
+      this.sending = false
+      this.errorMessage = ''
     }
   }
 })
