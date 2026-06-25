@@ -39,7 +39,7 @@ from app.schemas.chat import (
     WorkflowState,
 )
 from app.services.llm_service import llm_service
-from app.services.profile_service import profile_service
+from app.services.profile_service import MemoryCandidate, profile_service
 
 
 RECENT_HISTORY_LIMIT = 3
@@ -154,10 +154,17 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
-        saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        memory_candidates = profile_service.extract_memory_candidates(cleaned_content)
+        saved_memories = self._remember_user_text(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            text=cleaned_content,
+            candidates=memory_candidates,
+        )
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
-        if self._is_memory_only_message(cleaned_content, saved_memories):
-            assistant_content = self._build_memory_saved_notice(saved_memories)
+        if self._is_memory_only_message(cleaned_content, memory_candidates):
+            assistant_content = self._build_memory_saved_notice(saved_memories, memory_candidates)
             detail = self._append_assistant_message(session_id=session_id, content=assistant_content, session=session)
             self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
             self._persist_session_row(db=db, user_id=user_id, session=session)
@@ -219,10 +226,17 @@ class InMemoryChatService:
         self._get_session(db=db, user_id=user_id, session_id=session_id)
         session, workflow_state = self._append_user_message(session_id=session_id, content=cleaned_content)
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[session["messages"][-1]])
-        saved_memories = self._remember_user_text(db=db, user_id=user_id, session_id=session_id, text=cleaned_content)
+        memory_candidates = profile_service.extract_memory_candidates(cleaned_content)
+        saved_memories = self._remember_user_text(
+            db=db,
+            user_id=user_id,
+            session_id=session_id,
+            text=cleaned_content,
+            candidates=memory_candidates,
+        )
         self._refresh_recommendation_context(db=db, user_id=user_id, state=workflow_state)
-        if self._is_memory_only_message(cleaned_content, saved_memories):
-            assistant_content = self._build_memory_saved_notice(saved_memories)
+        if self._is_memory_only_message(cleaned_content, memory_candidates):
+            assistant_content = self._build_memory_saved_notice(saved_memories, memory_candidates)
             session_detail = self._append_assistant_message(
                 session_id=session_id,
                 content=assistant_content,
@@ -932,12 +946,21 @@ class InMemoryChatService:
         state.disease = list(dict.fromkeys([*state.disease, *context.health_concerns]))
         state.recommendation_context = context.model_dump()
 
-    def _remember_user_text(self, *, db: Session, user_id: int, session_id: str, text: str) -> list[UserMemory]:
+    def _remember_user_text(
+        self,
+        *,
+        db: Session,
+        user_id: int,
+        session_id: str,
+        text: str,
+        candidates: list[MemoryCandidate] | None = None,
+    ) -> list[UserMemory]:
         return profile_service.save_chat_memories(
             db=db,
             user_id=user_id,
             session_id=session_id,
             text=text,
+            candidates=candidates,
         )
 
     def _append_memory_saved_notice(self, assistant_content: str, memories: list[UserMemory]) -> str:
@@ -946,8 +969,12 @@ class InMemoryChatService:
             return assistant_content
         return f"{assistant_content.rstrip()}\n\n{notice}"
 
-    def _build_memory_saved_notice(self, memories: list[UserMemory]) -> str:
-        if not memories:
+    def _build_memory_saved_notice(
+        self,
+        memories: list[UserMemory],
+        candidates: list[MemoryCandidate] | None = None,
+    ) -> str:
+        if not memories and not candidates:
             return ""
         type_labels = {
             "goal": "目标",
@@ -956,14 +983,24 @@ class InMemoryChatService:
             "preference": "偏好",
             "health_concern": "健康关注",
         }
-        parts = [
-            f"{type_labels.get(memory.memory_type, memory.memory_type)}：{memory.content}"
-            for memory in memories
-        ]
+        parts: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for memory in memories:
+            key = (memory.memory_type, memory.content)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(f"{type_labels.get(memory.memory_type, memory.memory_type)}：{memory.content}")
+        for candidate in candidates or []:
+            key = (candidate.memory_type, candidate.content)
+            if key in seen:
+                continue
+            seen.add(key)
+            parts.append(f"{type_labels.get(candidate.memory_type, candidate.memory_type)}：{candidate.content}")
         return f"已记住：{'；'.join(parts)}。可在「我的营养画像」里删除或修改。"
 
-    def _is_memory_only_message(self, text: str, memories: list[UserMemory]) -> bool:
-        if not memories:
+    def _is_memory_only_message(self, text: str, candidates: list[MemoryCandidate]) -> bool:
+        if not candidates:
             return False
         ask_keywords = [
             "帮我",

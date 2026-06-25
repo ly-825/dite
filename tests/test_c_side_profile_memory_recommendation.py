@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -19,6 +20,16 @@ from app.models import (  # noqa: F401
     UserProfile,
 )
 from app.services.chat_service import chat_service
+
+
+@pytest.fixture(autouse=True)
+def disable_real_llm_memory_extraction(monkeypatch):
+    monkeypatch.setattr("app.services.llm_service.llm_service.enabled", False)
+    monkeypatch.setattr("app.services.llm_service.llm_service.client", None)
+    monkeypatch.setattr(
+        "app.services.profile_service.llm_service.extract_user_memory_candidates",
+        lambda *, user_message: None,
+    )
 
 
 def make_client(tmp_path: Path):
@@ -161,6 +172,58 @@ def test_duplicate_auto_confirmed_memory_is_not_saved_twice(tmp_path):
     ]
     assert len(confirmed) == 1
     assert profile["profile"]["preferences"] == ["红烧肉"]
+
+
+def test_llm_memory_extractor_auto_confirms_natural_language_taboos(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "llm_memory")
+    session = client.post("/api/chat/sessions", json={"title": "LLM Memory"}, headers=auth_headers(token)).json()
+
+    def fake_extract_user_memory_candidates(*, user_message: str):
+        assert user_message == "我不喜欢吃葱，不吃香菜。"
+        return [
+            {"type": "taboo", "content": "葱"},
+            {"type": "taboo", "content": "香菜"},
+        ]
+
+    monkeypatch.setattr(
+        "app.services.profile_service.llm_service.extract_user_memory_candidates",
+        fake_extract_user_memory_candidates,
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        json={"content": "我不喜欢吃葱，不吃香菜。"},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    assistant_reply = response.json()["messages"][-1]["content"]
+    assert assistant_reply.startswith("已记住")
+    assert "葱" in assistant_reply
+    assert "香菜" in assistant_reply
+    assert "食谱建议" not in assistant_reply
+
+    profile = client.get("/api/profile", headers=auth_headers(token)).json()
+    assert profile["profile"]["taboos"] == ["葱", "香菜"]
+
+
+def test_repeated_memory_only_message_does_not_generate_recipe(tmp_path):
+    client = make_client(tmp_path)
+    token = register_and_login(client, "repeat_memory")
+    session = client.post("/api/chat/sessions", json={"title": "Repeat"}, headers=auth_headers(token)).json()
+
+    for _ in range(2):
+        response = client.post(
+            f"/api/chat/sessions/{session['id']}/messages",
+            json={"content": "我不吃香菜，也对花生过敏。"},
+            headers=auth_headers(token),
+        )
+        assert response.status_code == 200
+        assistant_reply = response.json()["messages"][-1]["content"]
+        assert assistant_reply.startswith("已记住")
+        assert "食谱建议" not in assistant_reply
+        assert "早餐" not in assistant_reply
 
 
 def test_memory_message_with_explicit_recipe_request_still_generates_recipe(tmp_path):

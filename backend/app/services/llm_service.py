@@ -454,6 +454,56 @@ class DashScopeLLMService:
         except Exception:
             return None
 
+    def extract_user_memory_candidates(self, *, user_message: str) -> list[dict[str, str]] | None:
+        if not self.enabled or self.client is None:
+            return None
+
+        system_prompt = (
+            "你是用户长期营养画像的结构化记忆抽取器。"
+            "只抽取用户在当前输入中明确表达、适合长期保存的信息，不要推测，不要给建议。"
+            "允许的类型只有：goal、allergy、taboo、preference、health_concern。"
+            "type=goal 表示饮食目标，如减脂、增肌、控糖、均衡饮食。"
+            "type=allergy 表示过敏食物或成分。"
+            "type=taboo 表示用户不吃、不喜欢吃、要求不要推荐、需要避开的食物或口味。"
+            "type=preference 表示用户喜欢、偏好的食物、口味或饮食风格。"
+            "type=health_concern 表示用户明确说出的健康关注，如血糖偏高、血脂偏高、尿酸偏高、血压偏高。"
+            "如果没有可保存信息，返回空数组。"
+            "只返回 JSON，格式为："
+            '{"memories":[{"type":"taboo","content":"香菜"}]}'
+            "content 必须是短中文名词或短语，不要包含标点、解释、语气词或完整句子。"
+        )
+        try:
+            with self._suppress_stream_callbacks():
+                content = self._complete_chat_with_optional_thinking(
+                    model=settings.llm_model,
+                    temperature=0.0,
+                    max_tokens=500,
+                    messages=[
+                        cast(ChatCompletionSystemMessageParam, {"role": "system", "content": system_prompt}),
+                        cast(ChatCompletionUserMessageParam, {"role": "user", "content": user_message}),
+                    ],
+                )
+            payload = self._extract_json_payload((content or "").strip())
+            memories = payload.get("memories") or payload.get("记忆列表") or payload.get("长期记忆")
+            if not isinstance(memories, list):
+                return []
+
+            normalized: list[dict[str, str]] = []
+            for item in memories:
+                if not isinstance(item, dict):
+                    continue
+                memory_type = self._stringify_text(
+                    item.get("type") or item.get("memory_type") or item.get("类型")
+                )
+                memory_content = self._stringify_text(
+                    item.get("content") or item.get("value") or item.get("内容")
+                )
+                if memory_type and memory_content:
+                    normalized.append({"type": memory_type, "content": memory_content})
+            return normalized
+        except Exception:
+            return None
+
     def route_agent(
         self,
         *,

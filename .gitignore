@@ -23,6 +23,7 @@ frontend/.env.local
 backend/app/bodyreport/
 backend/app/picfile/
 backend/*.db
+local-dev.db
 
 # 本地测试/样例大文件
 *.pdf

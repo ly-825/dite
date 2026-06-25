@@ -11,4 +11,5 @@ python-multipart==0.0.20
 pypdf==5.5.0
 openai==1.79.0
 langgraph==0.2.60
+socksio==1.0.0
 

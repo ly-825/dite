@@ -24,6 +24,7 @@ from app.schemas.profile import (
     UserProfileResponse,
     UserProfileUpdate,
 )
+from app.services.llm_service import llm_service
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,13 @@ class CSideProfileService:
         if not content:
             return []
 
+        llm_candidates = llm_service.extract_user_memory_candidates(user_message=content)
+        if llm_candidates is not None:
+            return self._dedupe_memory_candidates(self._normalize_llm_memory_candidates(llm_candidates))
+
+        return self._extract_rule_memory_candidates(content)
+
+    def _extract_rule_memory_candidates(self, content: str) -> list[MemoryCandidate]:
         candidates: list[MemoryCandidate] = []
         patterns = [
             ("allergy", r"(?:我)?对([\u4e00-\u9fa5A-Za-z0-9]{1,12})过敏"),
@@ -149,6 +157,28 @@ class CSideProfileService:
                 if value:
                     candidates.append(MemoryCandidate(memory_type=memory_type, content=value))
 
+        return self._dedupe_memory_candidates(candidates)
+
+    def _normalize_llm_memory_candidates(self, raw_items: list[dict[str, str]]) -> list[MemoryCandidate]:
+        allowed_types = {"goal", "allergy", "taboo", "preference", "health_concern"}
+        candidates: list[MemoryCandidate] = []
+        for item in raw_items:
+            memory_type = str(item.get("type") or item.get("memory_type") or "").strip().lower()
+            content = self._normalize_memory_content(str(item.get("content") or "").strip())
+            if memory_type not in allowed_types or not content:
+                continue
+            candidates.append(MemoryCandidate(memory_type=memory_type, content=content))
+        return candidates
+
+    def _normalize_memory_content(self, value: str) -> str:
+        text = value.strip(" \t\r\n，。,.；;：:、")
+        text = re.sub(r"^(?:我(?:不|很)?(?:喜欢|爱)?吃?|对|不要(?:再)?给我推荐)", "", text)
+        text = text.strip(" \t\r\n，。,.；;：:、")
+        if not text or len(text) > 40:
+            return ""
+        return text
+
+    def _dedupe_memory_candidates(self, candidates: list[MemoryCandidate]) -> list[MemoryCandidate]:
         unique: list[MemoryCandidate] = []
         seen: set[tuple[str, str]] = set()
         for item in candidates:
@@ -166,9 +196,10 @@ class CSideProfileService:
         user_id: int,
         session_id: str,
         text: str,
+        candidates: list[MemoryCandidate] | None = None,
     ) -> list[UserMemory]:
         saved: list[UserMemory] = []
-        for candidate in self.extract_memory_candidates(text):
+        for candidate in candidates if candidates is not None else self.extract_memory_candidates(text):
             existed = db.execute(
                 select(UserMemory).where(
                     UserMemory.user_id == user_id,
