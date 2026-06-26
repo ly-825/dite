@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.meal_record import MealRecord
@@ -25,7 +25,12 @@ from app.schemas.profile import (
     UserProfileUpdate,
 )
 from app.services.llm_service import llm_service
-from app.services.meal_history_service import meal_history_service
+from app.services.meal_history_service import (
+    DELETED_FEEDBACK_MARKER,
+    MEAL_FEEDBACK_DISLIKED,
+    MEAL_FEEDBACK_LIKED,
+    meal_history_service,
+)
 
 
 @dataclass(frozen=True)
@@ -363,12 +368,19 @@ class CSideProfileService:
         meals = db.execute(
             select(MealRecord)
             .where(MealRecord.user_id == user_id, MealRecord.recorded_at >= recent_since)
+            .where(or_(MealRecord.user_feedback.is_(None), MealRecord.user_feedback != DELETED_FEEDBACK_MARKER))
             .order_by(MealRecord.recorded_at.desc())
         ).scalars().all()
+        disliked_meal_foods = meal_history_service.extract_feedback_foods(meals, MEAL_FEEDBACK_DISLIKED)
+        liked_meal_foods = meal_history_service.extract_feedback_foods(meals, MEAL_FEEDBACK_LIKED)
         disliked = normalize_tags([
-            item.dish_name for item in feedbacks if item.feedback_type in {"dislike", "unavailable", "too_complex"}
+            *[item.dish_name for item in feedbacks if item.feedback_type in {"dislike", "unavailable", "too_complex"}],
+            *disliked_meal_foods,
         ])
-        liked = normalize_tags([item.dish_name for item in feedbacks if item.feedback_type == "like"])
+        liked = normalize_tags([
+            *[item.dish_name for item in feedbacks if item.feedback_type == "like"],
+            *liked_meal_foods,
+        ])
         recent_foods = meal_history_service.extract_recent_foods(meals)
         meal_review = meal_history_service.build_review_from_records(
             records=meals,

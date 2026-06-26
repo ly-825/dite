@@ -21,6 +21,8 @@ from app.schemas.meal_history import (
 )
 
 DELETED_FEEDBACK_MARKER = "__deleted__"
+MEAL_FEEDBACK_LIKED = "liked"
+MEAL_FEEDBACK_DISLIKED = "disliked"
 
 
 class MealHistoryService:
@@ -48,6 +50,26 @@ class MealHistoryService:
         db.commit()
         return True
 
+    def update_record_feedback(
+        self,
+        *,
+        db: Session,
+        user_id: int,
+        record_id: int,
+        feedback: str | None,
+    ) -> bool:
+        record = db.execute(
+            select(MealRecord)
+            .where(MealRecord.id == record_id, MealRecord.user_id == user_id)
+            .where(or_(MealRecord.user_feedback.is_(None), MealRecord.user_feedback != DELETED_FEEDBACK_MARKER))
+        ).scalar_one_or_none()
+        if record is None:
+            return False
+
+        record.user_feedback = feedback
+        db.commit()
+        return True
+
     def build_review_from_records(
         self,
         *,
@@ -61,6 +83,22 @@ class MealHistoryService:
         foods: list[str] = []
         seen: set[str] = set()
         for record in records:
+            for item in self._loads_foods(record.foods_json):
+                name = self._food_name(item)
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                foods.append(name)
+                if len(foods) >= limit:
+                    return foods
+        return foods
+
+    def extract_feedback_foods(self, records: list[MealRecord], feedback: str, *, limit: int = 20) -> list[str]:
+        foods: list[str] = []
+        seen: set[str] = set()
+        for record in records:
+            if record.user_feedback != feedback:
+                continue
             for item in self._loads_foods(record.foods_json):
                 name = self._food_name(item)
                 if not name or name in seen:

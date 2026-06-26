@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 
-import { deleteMealRecord, getMealRecords, getMealReview } from '../api/meals'
+import { deleteMealRecord, getMealRecords, getMealReview, updateMealRecordFeedback } from '../api/meals'
 
 const emptyHistory = () => ({
   days: 7,
@@ -44,6 +44,7 @@ export const useMealsStore = defineStore('meals', {
     review: emptyReview(),
     loading: false,
     deletingRecordIds: [],
+    feedbackUpdatingRecordIds: [],
     errorMessage: ''
   }),
   actions: {
@@ -103,6 +104,28 @@ export const useMealsStore = defineStore('meals', {
         throw error
       } finally {
         this.deletingRecordIds = this.deletingRecordIds.filter((id) => id !== recordId)
+      }
+    },
+    async updateRecordFeedback(recordId, feedback, days = this.history.days || 7) {
+      if (!recordId || this.feedbackUpdatingRecordIds.includes(recordId)) {
+        return null
+      }
+
+      this.feedbackUpdatingRecordIds = [...this.feedbackUpdatingRecordIds, recordId]
+      this.errorMessage = ''
+
+      try {
+        const historyResponse = await updateMealRecordFeedback(recordId, { feedback }, { days })
+        this.history = {
+          ...emptyHistory(),
+          ...historyResponse.data
+        }
+        return this.history
+      } catch (error) {
+        this.errorMessage = resolveErrorMessage(error, '更新餐食反馈失败')
+        throw error
+      } finally {
+        this.feedbackUpdatingRecordIds = this.feedbackUpdatingRecordIds.filter((id) => id !== recordId)
       }
     }
   }

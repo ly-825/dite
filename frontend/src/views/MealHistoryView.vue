@@ -130,6 +130,25 @@
                 <span>脂肪 {{ formatNumber(record.estimated_fat_g) }}g</span>
               </div>
 
+              <div class="record-card__feedback" aria-label="餐食反馈">
+                <button
+                  type="button"
+                  :class="{ active: record.user_feedback === 'liked' }"
+                  :disabled="isUpdatingFeedback(record.id)"
+                  @click="handleFeedback(record, 'liked')"
+                >
+                  喜欢
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: record.user_feedback === 'disliked' }"
+                  :disabled="isUpdatingFeedback(record.id)"
+                  @click="handleFeedback(record, 'disliked')"
+                >
+                  不喜欢
+                </button>
+              </div>
+
               <details class="analysis-detail">
                 <summary>查看分析</summary>
                 <!-- eslint-disable-next-line vue/no-v-html -->
@@ -173,8 +192,17 @@ async function handleDeleteRecord(record) {
   await mealsStore.deleteRecord(record.id, 7)
 }
 
+async function handleFeedback(record, feedback) {
+  const nextFeedback = record.user_feedback === feedback ? null : feedback
+  await mealsStore.updateRecordFeedback(record.id, nextFeedback, 7)
+}
+
 function isDeletingRecord(recordId) {
   return mealsStore.deletingRecordIds.includes(recordId)
+}
+
+function isUpdatingFeedback(recordId) {
+  return mealsStore.feedbackUpdatingRecordIds.includes(recordId)
 }
 
 function formatNumber(value) {
@@ -491,6 +519,34 @@ function resolveFoodNames(foods) {
     color: #334155;
     font-size: 12px;
     background: #f1f5f9;
+  }
+}
+
+.record-card__feedback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  button {
+    min-height: 30px;
+    padding: 0 12px;
+    border: 1px solid rgba(21, 128, 61, 0.16);
+    border-radius: 8px;
+    color: #166534;
+    font-size: 12px;
+    font-weight: 800;
+    background: #f8fafc;
+  }
+
+  button.active {
+    border-color: rgba(22, 163, 74, 0.42);
+    color: #ffffff;
+    background: #16a34a;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
   }
 }
 

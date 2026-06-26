@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+MealRecordFeedback = Literal["liked", "disliked"]
 
 
 class MealNutritionTotals(BaseModel):
@@ -25,6 +27,10 @@ class MealRecordResponse(BaseModel):
     estimated_fat_g: float | None = None
     user_feedback: str | None = None
     analysis_markdown: str
+
+
+class MealRecordFeedbackPayload(BaseModel):
+    feedback: MealRecordFeedback | None = None
 
 
 class DailyMealSummary(BaseModel):

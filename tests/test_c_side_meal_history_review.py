@@ -360,6 +360,136 @@ def test_delete_meal_record_hides_only_current_users_record(tmp_path):
     assert [item["id"] for item in alice_history_response.json()["records"]] == [keep_record_id]
 
 
+def test_meal_record_feedback_accepts_only_like_or_dislike_for_current_user(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    alice = register_and_login(client, "meal_feedback_alice")
+    bob = register_and_login(client, "meal_feedback_bob")
+    alice_id = current_user_id(client, alice)
+    bob_id = current_user_id(client, bob)
+    alice_record_id = insert_meal(
+        session_factory,
+        user_id=alice_id,
+        session_id="alice-feedback-session",
+        days_ago=0,
+        meal_type="午餐",
+        foods=[{"name": "清炒菜心"}],
+        calories=550,
+        protein=25,
+        carbohydrate=15,
+        fat=35,
+    )
+    bob_record_id = insert_meal(
+        session_factory,
+        user_id=bob_id,
+        session_id="bob-feedback-session",
+        days_ago=0,
+        meal_type="午餐",
+        foods=[{"name": "清蒸鱼"}],
+        calories=420,
+        protein=36,
+        carbohydrate=30,
+        fat=12,
+    )
+
+    like_response = client.patch(
+        f"/api/meals/records/{alice_record_id}/feedback?days=7",
+        headers=auth_headers(alice),
+        json={"feedback": "liked"},
+    )
+
+    assert like_response.status_code == 200
+    assert like_response.json()["records"][0]["user_feedback"] == "liked"
+
+    clear_response = client.patch(
+        f"/api/meals/records/{alice_record_id}/feedback?days=7",
+        headers=auth_headers(alice),
+        json={"feedback": None},
+    )
+    assert clear_response.status_code == 200
+    assert clear_response.json()["records"][0]["user_feedback"] is None
+
+    invalid_response = client.patch(
+        f"/api/meals/records/{alice_record_id}/feedback?days=7",
+        headers=auth_headers(alice),
+        json={"feedback": "too_complex"},
+    )
+    assert invalid_response.status_code == 422
+
+    cross_user_response = client.patch(
+        f"/api/meals/records/{bob_record_id}/feedback?days=7",
+        headers=auth_headers(alice),
+        json={"feedback": "disliked"},
+    )
+    assert cross_user_response.status_code == 404
+
+
+def test_recommendation_context_includes_meal_like_dislike_feedback(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    token = register_and_login(client, "meal_fb_context")
+    user_id = current_user_id(client, token)
+    liked_record_id = insert_meal(
+        session_factory,
+        user_id=user_id,
+        session_id="liked-meal-session",
+        days_ago=0,
+        meal_type="午餐",
+        foods=[{"name": "番茄炒蛋"}, {"name": "米饭"}],
+        calories=520,
+        protein=22,
+        carbohydrate=70,
+        fat=16,
+    )
+    disliked_record_id = insert_meal(
+        session_factory,
+        user_id=user_id,
+        session_id="disliked-meal-session",
+        days_ago=0,
+        meal_type="晚餐",
+        foods=[{"name": "红烧肉"}],
+        calories=880,
+        protein=24,
+        carbohydrate=40,
+        fat=58,
+    )
+    deleted_record_id = insert_meal(
+        session_factory,
+        user_id=user_id,
+        session_id="deleted-meal-session",
+        days_ago=0,
+        meal_type="早餐",
+        foods=[{"name": "油条"}],
+        calories=420,
+        protein=8,
+        carbohydrate=48,
+        fat=20,
+    )
+
+    client.patch(
+        f"/api/meals/records/{liked_record_id}/feedback",
+        headers=auth_headers(token),
+        json={"feedback": "liked"},
+    )
+    client.patch(
+        f"/api/meals/records/{disliked_record_id}/feedback",
+        headers=auth_headers(token),
+        json={"feedback": "disliked"},
+    )
+    client.delete(f"/api/meals/records/{deleted_record_id}", headers=auth_headers(token))
+
+    db = session_factory()
+    try:
+        context = profile_service.build_recommendation_context(db=db, user_id=user_id)
+    finally:
+        db.close()
+
+    dumped = context.model_dump()
+    assert "番茄炒蛋" in dumped["liked_dishes"]
+    assert "米饭" in dumped["liked_dishes"]
+    assert "红烧肉" in dumped["disliked_dishes"]
+    assert "油条" not in dumped["recent_foods"]
+    assert "油条" not in dumped["disliked_dishes"]
+
+
 def test_meal_review_flags_high_calories_and_low_protein(tmp_path):
     client, session_factory = make_client(tmp_path)
     token = register_and_login(client, "meal_review")

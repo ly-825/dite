@@ -23,3 +23,12 @@ export function deleteMealRecord(recordId, params = {}) {
     params
   })
 }
+
+export function updateMealRecordFeedback(recordId, data, params = {}) {
+  return request({
+    url: `/api/meals/records/${recordId}/feedback`,
+    method: 'patch',
+    data,
+    params
+  })
+}

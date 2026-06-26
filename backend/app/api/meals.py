@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.meal_history import MealHistoryResponse, MealReviewResponse
+from app.schemas.meal_history import MealHistoryResponse, MealRecordFeedbackPayload, MealReviewResponse
 from app.services.meal_history_service import meal_history_service
 
 
@@ -38,5 +38,24 @@ def delete_meal_record(
 ):
     deleted = meal_history_service.delete_record(db=db, user_id=current_user.id, record_id=record_id)
     if not deleted:
+        raise HTTPException(status_code=404, detail="餐食记录不存在")
+    return meal_history_service.list_records(db=db, user_id=current_user.id, days=days)
+
+
+@router.patch("/records/{record_id}/feedback", response_model=MealHistoryResponse)
+def update_meal_record_feedback(
+    record_id: int,
+    payload: MealRecordFeedbackPayload,
+    days: int = Query(default=7, ge=1, le=90),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    updated = meal_history_service.update_record_feedback(
+        db=db,
+        user_id=current_user.id,
+        record_id=record_id,
+        feedback=payload.feedback,
+    )
+    if not updated:
         raise HTTPException(status_code=404, detail="餐食记录不存在")
     return meal_history_service.list_records(db=db, user_id=current_user.id, days=days)
