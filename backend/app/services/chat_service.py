@@ -25,6 +25,7 @@ from app.agents.workflow_agents import (
     ReportParserAgent,
     UserProfileAgent,
 )
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.chat import ChatMessage as ChatMessageRow, ChatSession as ChatSessionRow
 from app.models.meal_record import MealRecord
@@ -81,7 +82,7 @@ class InMemoryChatService:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionDict] = {}
         self._lock = Lock()
-        self._bodyreport_dir = Path(__file__).resolve().parents[1] / "bodyreport"
+        self._bodyreport_dir = settings.bodyreport_dir
         self._bodyreport_dir.mkdir(parents=True, exist_ok=True)
         report_parser_agent = ReportParserAgent()
         self.report_parser_agent = report_parser_agent
@@ -1389,6 +1390,7 @@ class InMemoryChatService:
         return f"{normalized[:14]}..."
 
     def _build_welcome_message(self, state: WorkflowState | None = None) -> str:
+        """根据当前用户是否已有体检报告，返回不同的欢迎提示。"""
         if state is not None and state.has_medical_report:
             return (
                 "你好，我是食堂健康点餐助手。你可以继续提问，我会结合当前已保存的体检信息，"
@@ -1398,34 +1400,6 @@ class InMemoryChatService:
         return (
             "你好，我是食堂健康点餐助手。你可以上传体检报告 PDF，或者直接告诉我你的健康目标、"
             "饮食偏好、过敏和忌口，我会帮你做食谱规划、营养分析和点餐建议。"
-        )
-
-        if state is not None and state.has_medical_report:
-            return (
-                "你好，我是食堂健康点餐助手。系统已自动加载 `app/bodyreport` 目录下的核心体检报告。"
-                "你现在可以直接提问，我会结合食堂常见菜品、主食、汤品和分量，给出更通俗、好执行的点餐建议。"
-                "如果你需要更新健康基线，请重新上传新的体检报告 PDF，系统会覆盖旧报告。"
-            )
-
-        return (
-            "你好，我是食堂健康点餐助手。为了给你更准确的食堂点餐和日常饮食建议，请先上传最近的体检报告。"
-            "上传后，我会结合你的健康情况、风险提示和日常吃饭场景，给出更适合普通大众照着做的建议。"
-        )
-        """根据当前系统是否已有核心体检报告，返回不同的欢迎提示。"""
-        if state is not None and state.has_medical_report:
-            return (
-                "你好，我是基于 Multi-Agent 架构的 AI 健康智能营养系统。"
-                "系统已自动加载 `app/bodyreport` 目录下的核心体检报告，"
-                "你现在可以直接继续提问；我会在你真正提出画像、风险、营养、食谱或推荐需求时，"
-                "再基于这份体检报告按需生成对应分析结果。"
-                "如果你需要更新用户身份或健康基线，请重新上传新的体检报告 PDF，系统会覆盖旧报告。"
-            )
-
-        return (
-            "你好，我是基于 Multi-Agent 架构的 AI 健康智能营养系统。"
-            "为了生成更加准确、安全、个性化的饮食方案，请先上传最近的体检报告。"
-            "上传后，我会依次调用 Guard Agent、用户画像 Agent、健康风险 Agent、"
-            "营养分析 Agent、专属食谱生成 Agent 和推荐 Agent 为你提供方案。"
         )
 
     def _to_summary(self, session: SessionDict) -> ChatSessionSummary:

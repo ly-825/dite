@@ -10,6 +10,7 @@ from threading import Thread
 from typing import Any, cast
 from uuid import uuid4
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 from app.graphs import build_nutrition_graph
 from app.models.meal_record import MealRecord
@@ -801,7 +802,7 @@ class MealRecordAgent(BaseAgent):
     }
 
     def __init__(self) -> None:
-        self.picfile_dir = Path(__file__).resolve().parents[1] / "picfile"
+        self.picfile_dir = settings.picfile_dir
         self.picfile_dir.mkdir(parents=True, exist_ok=True)
 
     def maybe_record(

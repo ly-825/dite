@@ -1,0 +1,16 @@
+[Unit]
+Description=Diet Delushan API
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=diet
+Group=diet
+WorkingDirectory=/var/www/diet-delushan/backend
+EnvironmentFile=/var/www/diet-delushan/backend/.env
+ExecStart=/var/www/diet-delushan/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

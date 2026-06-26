@@ -42,8 +42,12 @@ def serve_frontend_asset(full_path: str = ""):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """应用启动时加载核心体检报告。"""
-    if settings.database_url.startswith("sqlite"):
+    """应用启动时准备运行目录、数据表与用户级体检报告。"""
+    settings.bodyreport_dir.mkdir(parents=True, exist_ok=True)
+    settings.picfile_dir.mkdir(parents=True, exist_ok=True)
+    settings.log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if settings.create_tables_on_startup or settings.database_url.startswith("sqlite"):
         from app import models as _models  # noqa: F401
         from app.db.base import Base
         from app.db.session import engine

@@ -64,6 +64,26 @@ def test_database_url_can_be_overridden_for_local_dev():
     assert settings.database_url == "sqlite:///./local-dev.db"
 
 
+def test_production_settings_expose_mysql_and_runtime_paths():
+    settings = Settings(
+        mysql_host="db.internal",
+        mysql_port=3307,
+        mysql_user="diet_app",
+        mysql_password="secret",
+        mysql_db="diet_prod",
+        database_url_override="",
+        upload_root_dir="/var/lib/diet-delushan/uploads",
+        log_dir="/var/log/diet-delushan",
+        create_tables_on_startup=True,
+    )
+
+    assert settings.database_url == "mysql+pymysql://diet_app:secret@db.internal:3307/diet_prod?charset=utf8mb4"
+    assert str(settings.bodyreport_dir) == "/var/lib/diet-delushan/uploads/bodyreport"
+    assert str(settings.picfile_dir) == "/var/lib/diet-delushan/uploads/picfile"
+    assert str(settings.log_path) == "/var/log/diet-delushan/app.log"
+    assert settings.create_tables_on_startup is True
+
+
 def test_register_can_omit_email_and_login_with_username(tmp_path):
     client, _ = make_client(tmp_path)
 
