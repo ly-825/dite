@@ -190,6 +190,52 @@ def test_streamed_single_meal_image_analysis_is_saved_to_history(tmp_path, monke
     assert records[0]["foods"][0]["estimated_grams"] == 180
 
 
+def test_single_meal_image_history_excludes_nutrition_rows_from_foods(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path)
+    token = register_and_login(client, "meal_clean_foods")
+    session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Clean image meal"},
+        headers=auth_headers(token),
+    ).json()
+
+    monkeypatch.setattr(
+        "app.services.chat_service.llm_service.analyze_single_meal_image",
+        lambda **kwargs: (
+            "## 单张餐食图片分析\n\n"
+            "| 食物 | 判断依据 | 估算份量 | 估算克数 | 食物类别 |\n"
+            "| --- | --- | ---: | ---: | --- |\n"
+            "| 清炒菜心 | 绿色茎叶蔬菜 | 1 碗 | 约 180 克 | 蔬菜 |\n"
+            "| 番茄炒蛋 | 可见鸡蛋与番茄 | 半盘 | 约 160 克 | 蛋白质 |\n\n"
+            "| 营养素 | 估算值 | 说明 |\n"
+            "| --- | ---: | --- |\n"
+            "| 蛋白质 | 25 g | 来自鸡蛋 |\n"
+            "| 碳水化合物 | 15 g | 来自蔬菜和番茄 |\n"
+            "| 脂肪 | 35 g | 来自烹调用油 |\n\n"
+            "- 热量：约 550 kcal\n"
+            "- 蛋白质：约 25 g\n"
+            "- 碳水：约 15 g\n"
+            "- 脂肪：约 35 g\n"
+        ),
+    )
+
+    response = client.post(
+        f"/api/chat/sessions/{session['id']}/messages",
+        data={"content": "这是我的午餐，帮我分析并记录。"},
+        files={"file": ("meal.png", b"fake-image", "image/png")},
+        headers=auth_headers(token),
+    )
+
+    assert response.status_code == 200
+    history_response = client.get("/api/meals/records?days=7", headers=auth_headers(token))
+
+    assert history_response.status_code == 200
+    payload = history_response.json()
+    food_names = [item["food_name"] for item in payload["records"][0]["foods"]]
+    assert food_names == ["清炒菜心", "番茄炒蛋"]
+    assert payload["recent_foods"] == ["清炒菜心", "番茄炒蛋"]
+
+
 def test_meal_history_backfills_existing_single_image_analysis(tmp_path):
     client, session_factory = make_client(tmp_path)
     token = register_and_login(client, "meal_backfill")

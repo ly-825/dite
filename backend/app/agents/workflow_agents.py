@@ -764,6 +764,23 @@ class MealRecordAgent(BaseAgent):
 
     agent_name = "用餐记录智能体"
     MEAL_INTENT_KEYWORDS = ["璁板綍", "鍚冧簡", "鏃╅", "鍗堥", "鏅氶", "鍔犻", "鐢ㄩ"]
+    NON_FOOD_LABELS = {
+        "热量",
+        "能量",
+        "卡路里",
+        "总热量",
+        "蛋白质",
+        "碳水",
+        "碳水化合物",
+        "脂肪",
+        "膳食纤维",
+        "纤维",
+        "钠",
+        "糖",
+        "营养素",
+        "合计",
+        "总计",
+    }
     MICRONUTRIENT_DB: dict[str, dict[str, tuple[float, str]]] = {
         "米饭": {"锰": (0.35, "mg"), "硒": (4.0, "ug")},
         "鸡蛋": {"硒": (23.3, "ug"), "锌": (1.1, "mg"), "维生素B12": (1.1, "ug")},
@@ -893,7 +910,7 @@ class MealRecordAgent(BaseAgent):
             if len(cells) < 2:
                 continue
             food_name = cells[0].strip(" *")
-            if not food_name or food_name in {"食物", "名称", "菜品"} or food_name in seen:
+            if not self._is_food_name_candidate(food_name) or food_name in seen:
                 continue
             grams = self._extract_grams(" ".join(cells[1:]))
             if grams <= 0:
@@ -914,7 +931,7 @@ class MealRecordAgent(BaseAgent):
 
         for match in re.finditer(r"(?:食物|菜品)\s*[:：]\s*([^，,。\n]+).*?(\d{1,4}(?:\.\d+)?)\s*(?:克|g)", markdown, flags=re.IGNORECASE):
             food_name = match.group(1).strip(" *")
-            if not food_name or food_name in seen:
+            if not self._is_food_name_candidate(food_name) or food_name in seen:
                 continue
             grams = self._coerce_int(match.group(2))
             if grams <= 0:
@@ -936,6 +953,14 @@ class MealRecordAgent(BaseAgent):
         if not match:
             return 0
         return self._coerce_int(match.group(1))
+
+    def _is_food_name_candidate(self, value: str) -> bool:
+        name = value.strip(" *：:")
+        if not name:
+            return False
+        if name in {"食物", "名称", "菜品"}:
+            return False
+        return name not in self.NON_FOOD_LABELS
 
     def _extract_nutrition_from_markdown(self, markdown: str) -> dict[str, float | int]:
         patterns = {

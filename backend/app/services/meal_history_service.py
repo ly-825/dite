@@ -23,6 +23,23 @@ from app.schemas.meal_history import (
 DELETED_FEEDBACK_MARKER = "__deleted__"
 MEAL_FEEDBACK_LIKED = "liked"
 MEAL_FEEDBACK_DISLIKED = "disliked"
+NON_FOOD_LABELS = {
+    "热量",
+    "能量",
+    "卡路里",
+    "总热量",
+    "蛋白质",
+    "碳水",
+    "碳水化合物",
+    "脂肪",
+    "膳食纤维",
+    "纤维",
+    "钠",
+    "糖",
+    "营养素",
+    "合计",
+    "总计",
+}
 
 
 class MealHistoryService:
@@ -309,14 +326,20 @@ class MealHistoryService:
             return []
         if not isinstance(value, list):
             return []
-        return [item for item in value if isinstance(item, dict)]
+        return [item for item in value if isinstance(item, dict) and self._food_name(item)]
 
     def _food_name(self, item: dict[str, Any]) -> str:
         for key in ["name", "food_name", "dish_name", "食物", "菜品"]:
             value = str(item.get(key) or "").strip()
-            if value:
+            if value and self._is_food_name_candidate(value):
                 return value
         return ""
+
+    def _is_food_name_candidate(self, value: str) -> bool:
+        name = value.strip(" *：:")
+        if not name:
+            return False
+        return name not in NON_FOOD_LABELS
 
     def _calorie_target(self, goal: str) -> int:
         if "减脂" in goal:
