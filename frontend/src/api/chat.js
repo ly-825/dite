@@ -26,6 +26,14 @@ export function getChatSessionDetail(sessionId) {
   })
 }
 
+// 删除指定会话。
+export function deleteChatSession(sessionId) {
+  return request({
+    url: `/api/chat/sessions/${sessionId}`,
+    method: 'delete'
+  })
+}
+
 // 向指定会话发送消息。
 export function sendChatMessage(sessionId, data) {
   return request({

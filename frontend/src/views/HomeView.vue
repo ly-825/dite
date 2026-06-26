@@ -7,6 +7,7 @@
         :user-info="authStore.userInfo"
         @create="handleCreateSession"
         @select="handleSelectSession"
+        @delete="handleDeleteSession"
         @logout="handleLogout"
       />
 
@@ -118,6 +119,19 @@ async function handleSelectSession(sessionId) {
   }
 
   await chatStore.selectSession(sessionId)
+}
+
+async function handleDeleteSession(sessionId) {
+  const confirmed = window.confirm('删除这条对话历史？删除后不会影响已保存的画像、记忆和餐食记录。')
+  if (!confirmed) {
+    return
+  }
+
+  try {
+    await chatStore.deleteSession(sessionId)
+  } catch (error) {
+    console.error(error)
+  }
 }
 
 async function handleSendMessage(content) {

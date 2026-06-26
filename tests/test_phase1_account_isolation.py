@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -33,7 +34,7 @@ def make_client(tmp_path: Path):
     chat_service.reset_runtime_state_for_tests(bodyreport_dir=tmp_path / "bodyreport")
 
     client = TestClient(app)
-    return client
+    return client, TestingSessionLocal
 
 
 def register_and_login(client: TestClient, username: str) -> str:
@@ -64,7 +65,7 @@ def test_database_url_can_be_overridden_for_local_dev():
 
 
 def test_register_can_omit_email_and_login_with_username(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     register_response = client.post(
         "/api/auth/register",
@@ -85,7 +86,7 @@ def test_register_can_omit_email_and_login_with_username(tmp_path):
 
 
 def test_register_without_email_still_rejects_duplicate_username(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     first = client.post(
         "/api/auth/register",
@@ -102,7 +103,7 @@ def test_register_without_email_still_rejects_duplicate_username(tmp_path):
 
 
 def test_register_with_email_keeps_existing_compatibility(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     register_response = client.post(
         "/api/auth/register",
@@ -114,7 +115,7 @@ def test_register_with_email_keeps_existing_compatibility(tmp_path):
 
 
 def test_chat_sessions_require_login(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
 
     response = client.get("/api/chat/sessions")
 
@@ -122,7 +123,7 @@ def test_chat_sessions_require_login(tmp_path):
 
 
 def test_chat_sessions_are_scoped_to_current_user(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
     alice_token = register_and_login(client, "alice")
     bob_token = register_and_login(client, "bob")
 
@@ -147,8 +148,74 @@ def test_chat_sessions_are_scoped_to_current_user(tmp_path):
     assert [item["title"] for item in bob_sessions.json()] == ["Bob plan"]
 
 
+def test_chat_session_delete_removes_only_chat_history_for_current_user(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    alice_token = register_and_login(client, "alice_delete")
+    bob_token = register_and_login(client, "bob_delete")
+
+    alice_session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Alice delete"},
+        headers=auth_headers(alice_token),
+    ).json()
+    bob_session = client.post(
+        "/api/chat/sessions",
+        json={"title": "Bob keep"},
+        headers=auth_headers(bob_token),
+    ).json()
+
+    db = session_factory()
+    try:
+        alice_meal = MealRecord(
+            user_id=client.get("/api/auth/me", headers=auth_headers(alice_token)).json()["id"],
+            session_id=alice_session["id"],
+            recorded_at=datetime.now(),
+            meal_type="午餐",
+            foods_json="[]",
+            estimated_calories_kcal=500,
+            estimated_protein_g=20,
+            estimated_carbohydrate_g=60,
+            estimated_fat_g=15,
+            analysis_markdown="已沉淀的餐食记录",
+        )
+        db.add(alice_meal)
+        db.commit()
+        meal_id = alice_meal.id
+    finally:
+        db.close()
+
+    cross_user_response = client.delete(
+        f"/api/chat/sessions/{bob_session['id']}",
+        headers=auth_headers(alice_token),
+    )
+    assert cross_user_response.status_code == 404
+
+    delete_response = client.delete(
+        f"/api/chat/sessions/{alice_session['id']}",
+        headers=auth_headers(alice_token),
+    )
+    assert delete_response.status_code == 204
+
+    assert client.get(
+        f"/api/chat/sessions/{alice_session['id']}",
+        headers=auth_headers(alice_token),
+    ).status_code == 404
+    assert client.get(
+        f"/api/chat/sessions/{bob_session['id']}",
+        headers=auth_headers(bob_token),
+    ).status_code == 200
+
+    db = session_factory()
+    try:
+        assert db.get(ChatSession, alice_session["id"]) is None
+        assert db.query(ChatMessage).filter(ChatMessage.session_id == alice_session["id"]).count() == 0
+        assert db.get(MealRecord, meal_id) is not None
+    finally:
+        db.close()
+
+
 def test_medical_report_is_not_shared_between_users(tmp_path):
-    client = make_client(tmp_path)
+    client, _ = make_client(tmp_path)
     alice_token = register_and_login(client, "alice_report")
     bob_token = register_and_login(client, "bob_report")
 

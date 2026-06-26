@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -38,6 +38,19 @@ def get_chat_session(
 ):
     """获取单个会话详情。"""
     return chat_service.get_session(db=db, user_id=current_user.id, session_id=session_id)
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """删除当前用户的一条聊天会话及其消息，不删除长期画像或餐食记录。"""
+    deleted = chat_service.delete_session(db=db, user_id=current_user.id, session_id=session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return None
 
 
 @router.post("/sessions/{session_id}/messages", response_model=ChatSessionDetail)

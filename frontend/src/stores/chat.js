@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 
 import {
   createChatSession,
+  deleteChatSession,
   getChatSessionDetail,
   getChatSessions,
   streamChatMessage,
@@ -65,6 +66,7 @@ export const useChatStore = defineStore('chat', {
     initializing: false,
     sending: false,
     activeStreamSessionId: '',
+    deletingSessionIds: [],
     errorMessage: ''
   }),
   getters: {
@@ -111,6 +113,47 @@ export const useChatStore = defineStore('chat', {
       const session = response.data
       this.applySessionDetail(session)
       return session
+    },
+    // 删除会话，只清理聊天历史，不影响画像、记忆和餐食记录。
+    async deleteSession(sessionId) {
+      if (!sessionId || this.deletingSessionIds.includes(sessionId)) {
+        return null
+      }
+
+      if (this.sending && this.activeStreamSessionId === sessionId) {
+        this.errorMessage = '当前回复还在生成中，请稍后再删除这条会话。'
+        return null
+      }
+
+      this.deletingSessionIds = [...this.deletingSessionIds, sessionId]
+      this.errorMessage = ''
+
+      try {
+        await deleteChatSession(sessionId)
+        const deletedCurrentSession = sessionId === this.currentSessionId
+        this.sessions = this.sessions.filter((item) => item.id !== sessionId)
+
+        if (!deletedCurrentSession) {
+          await this.fetchSessions()
+          return this.currentSession
+        }
+
+        this.currentSessionId = ''
+        this.currentMessages = []
+        this.currentWorkflowState = null
+        await this.fetchSessions()
+
+        if (this.sessions.length > 0) {
+          return this.selectSession(this.sessions[0].id)
+        }
+
+        return this.createSession()
+      } catch (error) {
+        this.errorMessage = resolveRequestErrorMessage(error, '删除会话失败，请稍后重试')
+        throw error
+      } finally {
+        this.deletingSessionIds = this.deletingSessionIds.filter((id) => id !== sessionId)
+      }
     },
     // 切换当前会话。
     async selectSession(sessionId) {
@@ -318,6 +361,7 @@ export const useChatStore = defineStore('chat', {
       this.initializing = false
       this.sending = false
       this.activeStreamSessionId = ''
+      this.deletingSessionIds = []
       this.errorMessage = ''
     }
   }

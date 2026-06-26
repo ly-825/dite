@@ -10,7 +10,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.agents.workflow_agents import (
@@ -144,6 +144,29 @@ class InMemoryChatService:
     def get_session(self, *, db: Session, user_id: int, session_id: str) -> ChatSessionDetail:
         """根据会话 ID 获取完整消息列表。"""
         return self._to_detail(self._get_session(db=db, user_id=user_id, session_id=session_id))
+
+    def delete_session(self, *, db: Session, user_id: int, session_id: str) -> bool:
+        """删除当前用户的一条聊天会话及其聊天消息。"""
+        row = db.execute(
+            select(ChatSessionRow).where(
+                ChatSessionRow.id == session_id,
+                ChatSessionRow.user_id == user_id,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+
+        db.execute(
+            delete(ChatMessageRow).where(
+                ChatMessageRow.session_id == session_id,
+                ChatMessageRow.user_id == user_id,
+            )
+        )
+        db.delete(row)
+        db.commit()
+        with self._lock:
+            self._sessions.pop(session_id, None)
+        return True
 
     def append_message(self, *, db: Session, user_id: int, session_id: str, content: str) -> ChatSessionDetail:
         """向指定会话追加用户消息，并生成一条助手回复。"""

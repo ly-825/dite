@@ -22,18 +22,31 @@
     </div>
 
     <div class="session-list">
-      <button
+      <article
         v-for="session in sessions"
         :key="session.id"
         class="session-item"
         :class="{ 'session-item--active': session.id === currentSessionId }"
-        type="button"
-        @click="$emit('select', session.id)"
       >
-        <strong>{{ session.title }}</strong>
-        <span class="session-preview">{{ session.last_message_preview || '点击继续完善你的饮食计划' }}</span>
-        <span>{{ formatDate(session.updated_at) }}</span>
-      </button>
+        <button
+          class="session-select"
+          type="button"
+          @click="$emit('select', session.id)"
+        >
+          <strong>{{ session.title }}</strong>
+          <span class="session-preview">{{ session.last_message_preview || '点击继续完善你的饮食计划' }}</span>
+          <span>{{ formatDate(session.updated_at) }}</span>
+        </button>
+        <button
+          class="session-delete"
+          type="button"
+          aria-label="删除对话"
+          title="删除对话"
+          @click.stop="$emit('delete', session.id)"
+        >
+          删除
+        </button>
+      </article>
 
       <div
         v-if="!sessions.length"
@@ -69,7 +82,7 @@ defineProps({
   }
 })
 
-defineEmits(['create', 'select', 'logout'])
+defineEmits(['create', 'select', 'delete', 'logout'])
 
 // 将时间格式化为更易阅读的中文样式。
 function formatDate(value) {
@@ -172,15 +185,16 @@ function formatDate(value) {
 }
 
 .session-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
   padding: 16px;
   border: 1px solid transparent;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.78);
   text-align: left;
-  cursor: pointer;
   transition: all 0.2s ease;
 
   strong {
@@ -203,6 +217,40 @@ function formatDate(value) {
     background: #ffffff;
     box-shadow: 0 10px 30px rgba(22, 101, 52, 0.08);
   }
+}
+
+.session-select {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid rgba(220, 38, 38, 0.16);
+  border-radius: 8px;
+  color: #b91c1c !important;
+  font-size: 12px !important;
+  font-weight: 800;
+  background: #fff7f7;
+  cursor: pointer;
+  transition: opacity 0.2s ease, background 0.2s ease;
+  opacity: 0.82;
+}
+
+.session-delete:hover {
+  background: #fee2e2;
 }
 
 .session-preview {
