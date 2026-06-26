@@ -138,6 +138,7 @@ class InMemoryChatService:
         with self._lock:
             self._sessions[session_id] = session
         self._persist_session_row(db=db, user_id=user_id, session=session)
+        db.flush()
         self._persist_message_rows(db=db, user_id=user_id, session_id=session_id, messages=[welcome_message])
         db.commit()
         return self._to_detail(session)
