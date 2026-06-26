@@ -44,7 +44,19 @@
           title="删除对话"
           @click.stop="$emit('delete', session.id)"
         >
-          删除
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+          >
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M10 11v6m4-6v6m5-11v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+            />
+          </svg>
         </button>
       </article>
 
@@ -236,21 +248,34 @@ function formatDate(value) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 28px;
-  padding: 0 8px;
-  border: 1px solid rgba(220, 38, 38, 0.16);
-  border-radius: 8px;
-  color: #b91c1c !important;
-  font-size: 12px !important;
-  font-weight: 800;
-  background: #fff7f7;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgba(21, 128, 61, 0.12);
+  border-radius: 50%;
+  color: #94a3b8 !important;
+  background: rgba(248, 250, 252, 0.86);
   cursor: pointer;
-  transition: opacity 0.2s ease, background 0.2s ease;
-  opacity: 0.82;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+
+  svg {
+    width: 15px;
+    height: 15px;
+  }
 }
 
-.session-delete:hover {
-  background: #fee2e2;
+.session-delete:hover,
+.session-delete:focus-visible {
+  border-color: rgba(220, 38, 38, 0.22);
+  color: #dc2626 !important;
+  background: #fff1f2;
+  transform: translateY(-1px);
+}
+
+.session-delete:focus-visible {
+  outline: 3px solid rgba(220, 38, 38, 0.12);
+  outline-offset: 2px;
 }
 
 .session-preview {
